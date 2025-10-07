@@ -25,6 +25,9 @@ def setup_logging():
     file_handler = logging.FileHandler(log_filepath, mode='w', encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
 
+    # Create console handler for real-time debugging
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)  # Only show INFO and above in console
 
     # Create formatter
     formatter = logging.Formatter(
@@ -34,9 +37,11 @@ def setup_logging():
 
     # Add formatter to handlers
     file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
 
     # Add handlers to logger
     logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
     # Log initial setup
     logger.info(f"Logging initialized. Log file: {log_filepath}")

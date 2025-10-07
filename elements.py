@@ -33,11 +33,33 @@ class Elements(ElementsBase):
 
         logger.debug("Adding drum pads matrix")
         self.add_button_matrix(
-            create_matrix_identifiers(64, 128, width=8, flip_rows=True),
+            [
+             [88, 89, 90, 91],
+             [80, 81, 82, 83],
+             [72, 73, 74, 75],
+             [64, 65, 66, 67],
+            ],
             "Drum_Pads",
             msg_type=MIDI_NOTE_TYPE,
             channels=9,
         )
+        logger.debug("Adding control pads matrix")
+        self.add_button_matrix(
+            [
+                [92, 93, 94, 95],
+                [84, 85, 86, 87],
+            ],
+            "Control_Pads",
+            msg_type=MIDI_NOTE_TYPE,
+            channels=9,
+        )
+        # logger.debug("Adding sequence pads matrix")
+        # self.add_button_matrix(
+        #     create_matrix_identifiers(96, 128, width=8, flip_rows=True),
+        #     "Sequence_Pads",
+        #     msg_type=MIDI_NOTE_TYPE,
+        #     channels=9,
+        # )
 
         logger.debug("Adding track buttons matrix")
         self.add_button_matrix([range(100, 108)], "Track_Buttons", msg_type=MIDI_NOTE_TYPE)
@@ -51,12 +73,17 @@ class Elements(ElementsBase):
         logger.debug("Adding faders encoder matrix")
         self.add_encoder_matrix([range(48, 56)], "Faders")
 
+        def pad_mode_message_generator(v):
+            """Generate pad mode SYSEX message and log the value"""
+            message = PAD_MODE_HEADER + (v, SYSEX_END)
+            logger.debug(f"Sending pad mode SYSEX message with value: {v}")
+            return message
 
         logger.debug("Adding pad mode control sysex element")
         self.add_sysex_element(
             PAD_MODE_HEADER,
             "Pad_Mode_Control",
-            (lambda v: PAD_MODE_HEADER + (v, SYSEX_END)),
+            pad_mode_message_generator,
             use_first_byte_as_value=True,
         )
 

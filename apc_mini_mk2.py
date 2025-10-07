@@ -12,12 +12,13 @@ from .logger_config import get_logger
 from .colors import Rgb, Skin
 from .elements import PAD_MODE_HEADER, SYSEX_END, Elements
 from .mappings import create_mappings
+from .drum_step_sequencer import DrumStepSequencerComponent
 
 logger = get_logger('apc_mini_mk2')
 
 class Specification(ControlSurfaceSpecification):
     elements_type = Elements
-    control_surface_skin = create_skin(skin=Skin, colors=Rgb)
+    control_surface_skin = create_skin(skin=Skin)
     num_tracks = 8
     num_scenes = 8
     include_returns = True
@@ -27,6 +28,9 @@ class Specification(ControlSurfaceSpecification):
     identity_response_id_bytes = (71, 79, 0, 25)
     goodbye_messages = (PAD_MODE_HEADER + (0, SYSEX_END),)
     create_mappings_function = create_mappings
+    component_map = {
+        "Drum_Step_Sequencer": DrumStepSequencerComponent,
+    }
 
 
 class APC_mini_mk2(ControlSurface):
@@ -37,15 +41,12 @@ class APC_mini_mk2(ControlSurface):
         logger.info("APC mini mk2 control surface initialized")
 
     def setup(self):
-        logger.debug("Setting up APC mini mk2 control surface")
         super().setup()
         self._APC_mini_mk2__on_pad_mode_changed.subject = self.component_map["Pad_Modes"]
-        logger.info("APC mini mk2 control surface setup completed")
 
     @staticmethod
     def _should_include_element_in_background(element):
         should_include = "Drum_Pad" not in element.name
-        logger.debug(f"Element {element.name} should be included in background: {should_include}")
         return should_include
 
     @listens("selected_mode")  # type: ignore

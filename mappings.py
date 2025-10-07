@@ -52,7 +52,12 @@ def create_mappings(control_surface):
         mode_selection_control="pad_mode_control",
         session=dict(component="Session", clip_launch_buttons="clip_launch_buttons"),
         note=None,
-        drum=dict(component="Drum_Group", matrix="drum_pads"),
+        drum=dict(
+            component="Drum_Step_Sequencer",
+            drum_group_matrix="drum_pads",
+            mode_toggle_button="control_pads_raw[0]",  # Button 93 (first button in second row)
+            # step_sequence_matrix="step_sequence_pads",
+        ),
         note_edit=None,
     )
 
