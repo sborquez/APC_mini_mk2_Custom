@@ -40,12 +40,17 @@ class Rgb:
     RED_BLINK = SimpleColor(5, channel=BLINK_CHANNEL)
     RED_PULSE = SimpleColor(5, channel=PULSE_CHANNEL)
     RED_HALF = SimpleColor(5, channel=HALF_BRIGHTNESS_CHANNEL)
+    AMBERISH = make_simple_color(108)
     AMBER = make_simple_color(9)
-    YELLOW = make_simple_color(13)
+    AMBER_HALF = SimpleColor(9, channel=HALF_BRIGHTNESS_CHANNEL)
+    AMBER_PULSE = SimpleColor(9, channel=PULSE_CHANNEL)
+    YELLOWISH = make_simple_color(8)
+    YELLOW = make_simple_color(97)
     GREENISH = make_simple_color(16)
     GREEN = make_simple_color(21)
     GREEN_BLINK = SimpleColor(21, channel=BLINK_CHANNEL)
     GREEN_PULSE = SimpleColor(21, channel=PULSE_CHANNEL)
+    GREEN_HALF = SimpleColor(21, channel=HALF_BRIGHTNESS_CHANNEL)
     PURPLE = make_simple_color(81)
     OCEAN = make_simple_color(41)
     BLUE = make_simple_color(45)
@@ -77,8 +82,8 @@ class Skin:
     class DrumStepSequencer:
         # Step sequencer
         StepEmpty = Rgb.BLACK
-        StepActiveNormal = Rgb.WHITE
         StepActiveSoft = Rgb.WHITE_HALF
+        StepActiveNormal = Rgb.WHITE
         StepActiveAccent = Rgb.AMBER
         CurrentStep = Rgb.GREEN_BLINK
         StepFilled = Rgb.PURPLE
@@ -92,3 +97,44 @@ class Skin:
         # Mode toggle button colors - following proper naming convention
         ModeToggleOff = Rgb.GREENISH  # Greenish for selection mode (off state)
         ModeToggleOn = Rgb.GREEN      # Green for playable mode (on state)
+
+        # Velocity button states (off/on)
+        # NOTE: APC Mini MK2 may not support pulse/half-brightness via MIDI channels
+        # Using same colors for now - just testing if colors show at all
+        VelocityAccentOff = Rgb.AMBERISH
+        VelocityAccentOn = Rgb.AMBER
+        VelocitySoftOff = Rgb.YELLOWISH
+        VelocitySoftOn = Rgb.YELLOW
+
+    class NoteEditor:
+        # Step colors
+        StepEmpty = Rgb.BLACK
+        StepFilled = Rgb.WHITE
+        StepActivated = Rgb.GREEN
+        StepMuted = Rgb.GREY
+        StepDisabled = Rgb.BLACK
+
+        # Playhead - current playing step
+        Playhead = Rgb.GREEN_BLINK
+        PlayheadMuted = Rgb.GREY
+
+        # Page navigation
+        PageNavigation = Rgb.BLUE
+        PageNavigationPressed = Rgb.WHITE
+
+        # Grid resolution colors
+        class Resolution:
+            Selected = Rgb.AMBER
+            NotSelected = Rgb.AMBER_HALF
+
+    class LoopSelector:
+        # Loop/page selection
+        PageEmpty = Rgb.BLACK
+        PageFilled = Rgb.BLUE
+        PageFilledAlternate = Rgb.PURPLE
+        PageActive = Rgb.WHITE
+
+        # Navigation buttons
+        Navigation = Rgb.BLUE
+        NavigationPressed = Rgb.WHITE
+        NavigationDisabled = Rgb.GREY

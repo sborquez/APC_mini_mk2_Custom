@@ -36,13 +36,39 @@ class Specification(ControlSurfaceSpecification):
 class APC_mini_mk2(ControlSurface):
 
     def __init__(self, *a, **k):
-        logger.debug("Initializing APC mini mk2 control surface")
-        (super().__init__)(Specification, *a, **k)
-        logger.info("APC mini mk2 control surface initialized")
+        try:
+            logger.info("=" * 60)
+            logger.info("STARTING APC_mini_mk2.__init__")
+            logger.info("=" * 60)
+            logger.debug(f"Args: {a}")
+            logger.debug(f"Kwargs: {k}")
+
+            logger.debug("Calling ControlSurface.__init__ with Specification...")
+            (super().__init__)(Specification, *a, **k)
+
+            logger.info("=" * 60)
+            logger.info("✓✓✓ APC_mini_mk2 INITIALIZED SUCCESSFULLY ✓✓✓")
+            logger.info("=" * 60)
+        except Exception as e:
+            logger.error("=" * 60)
+            logger.error("✗✗✗ APC_mini_mk2 INITIALIZATION FAILED ✗✗✗")
+            logger.error(f"Error: {e}")
+            logger.error("=" * 60)
+            logger.error("Full traceback:", exc_info=True)
+            raise
 
     def setup(self):
-        super().setup()
-        self._APC_mini_mk2__on_pad_mode_changed.subject = self.component_map["Pad_Modes"]
+        try:
+            logger.debug("Starting setup()...")
+            super().setup()
+            logger.debug("✓ Parent setup() complete")
+
+            logger.debug("Setting up pad mode listener...")
+            self._APC_mini_mk2__on_pad_mode_changed.subject = self.component_map["Pad_Modes"]
+            logger.info("✓ setup() complete")
+        except Exception as e:
+            logger.error(f"✗ setup() FAILED: {e}", exc_info=True)
+            raise
 
     @staticmethod
     def _should_include_element_in_background(element):
