@@ -13,6 +13,7 @@ from .colors import Rgb, Skin
 from .elements import PAD_MODE_HEADER, SYSEX_END, Elements
 from .mappings import create_mappings
 from .drum_step_sequencer import DrumStepSequencerComponent
+from .drum_rack_level import DrumRackLevelComponent
 
 logger = get_logger('apc_mini_mk2')
 
@@ -30,6 +31,7 @@ class Specification(ControlSurfaceSpecification):
     create_mappings_function = create_mappings
     component_map = {
         "Drum_Step_Sequencer": DrumStepSequencerComponent,
+        "Drum_Rack_Level": DrumRackLevelComponent,
     }
 
 
