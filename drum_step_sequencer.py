@@ -53,329 +53,8 @@ SOFT_VELOCITY = 60
 ACCENT_VELOCITY = 127
 
 
-class CustomPlayheadComponent(Component):
-    """
-    Custom playhead component that visually indicates the current playing step
-    on the step sequencer grid. Works with button matrices unlike the built-in
-    PlayheadComponent which requires hardware playhead elements.
-    """
-
-    def __init__(self, paginator=None, grid_resolution=None, *a, **k):
-        super().__init__(*a, **k)
-        self._paginator = paginator
-        self._grid_resolution = grid_resolution
-        self._matrix = None
-        self._clip = None
-        self._current_step = -1
-        self._is_playing = False
-        self._playhead_task = None
-
-        # Task for periodic playhead updates
-        try:
-            self._playhead_task = self._tasks.add(task.loop(task.sequence(  # type: ignore
-                task.run(self._update_playhead),
-                task.wait(0.1)  # Update every 100ms
-            )))
-            self._playhead_task.kill()
-        except Exception as e:
-            logger.warning(f"Failed to create playhead task: {e}")
-
-        # Listen to song playback state
-        self._CustomPlayheadComponent__on_is_playing_changed.subject = self.song
-
-        logger.debug("CustomPlayheadComponent initialized")
-
-    def disconnect(self):
-        """Clean up when component is disconnected"""
-        if self._playhead_task:
-            self._playhead_task.kill()
-        super().disconnect()
-
-    def set_matrix(self, matrix):
-        """Set the button matrix for playhead visualization"""
-        self._matrix = matrix
-        logger.debug(f"CustomPlayheadComponent matrix set: {matrix}")
-
-    def set_clip(self, clip):
-        """Set the clip to track for playhead position"""
-        if liveobj_valid(clip) and clip != self._clip:
-            self._clip = clip
-            logger.debug(f"CustomPlayheadComponent clip set: {clip}")
-            self._update_playhead_state()
-
-    @listens('is_playing')  # type: ignore
-    def __on_is_playing_changed(self):
-        """Called when song playback starts/stops"""
-        self._update_playhead_state()
-
-    def _update_playhead_state(self):
-        """Update whether playhead should be actively tracking"""
-        if not self._playhead_task:
-            return
-
-        is_playing = self.song.is_playing if self.song else False
-        clip_is_playing = False
-
-        if liveobj_valid(self._clip):
-            clip_is_playing = self._clip.is_arrangement_clip or self._clip.is_playing  # type: ignore
-
-        should_show_playhead = self.is_enabled() and is_playing and clip_is_playing
-
-        if should_show_playhead and not self._playhead_task.is_running:
-            self._playhead_task.restart()
-            logger.debug("Playhead tracking started")
-        elif not should_show_playhead and self._playhead_task.is_running:
-            self._playhead_task.kill()
-            self._clear_playhead()
-            logger.debug("Playhead tracking stopped")
-
-    def _update_playhead(self):
-        """Update the current playhead position visualization"""
-        if not self.is_enabled():
-            logger.debug("Playhead not enabled")
-            return
-
-        if not self._matrix:
-            logger.debug("Playhead has no matrix")
-            return
-
-        if not liveobj_valid(self._clip):
-            logger.debug("Playhead has no valid clip")
-            return
-
-        if not self._grid_resolution:
-            logger.debug("Playhead has no grid resolution")
-            return
-
-        # Get current playback position
-        try:
-            playing_position = self._clip.playing_position  # type: ignore
-        except AttributeError:
-            logger.debug("Clip has no playing_position")
-            return
-
-        # Calculate which step is currently playing
-        step_length = self._grid_resolution.step_length
-        page_time = self._paginator.page_time if self._paginator else 0.0
-
-        # Calculate step index relative to current page
-        position_in_page = playing_position - page_time
-        current_step_index = int(position_in_page / step_length)
-
-        # Only update if step changed
-        if current_step_index != self._current_step:
-            logger.debug(f"Playhead moved: pos={playing_position:.2f}, page={page_time:.2f}, step_len={step_length:.4f}, step={current_step_index}")
-            self._clear_playhead()
-            self._current_step = current_step_index
-            self._draw_playhead()
-
-    def _draw_playhead(self):
-        """Draw the playhead indicator on the current step"""
-        if not self._matrix:
-            logger.debug("_draw_playhead: no matrix")
-            return
-
-        if self._current_step < 0:
-            logger.debug(f"_draw_playhead: negative step {self._current_step}")
-            return
-
-        width = self._matrix.width if self._matrix else 8
-        height = self._matrix.height if self._matrix else 4
-        total_steps = width * height
-
-        logger.debug(f"_draw_playhead: step={self._current_step}, width={width}, height={height}, total={total_steps}")
-
-        if 0 <= self._current_step < total_steps:
-            # Calculate row and column from step index
-            # Matrix is organized as rows from top to bottom
-            row = self._current_step // width
-            col = self._current_step % width
-
-            logger.debug(f"Drawing playhead at col={col}, row={row}")
-
-            if row < height and col < width:
-                button = self._matrix.get_button(col, row)
-                logger.debug(f"Got button: {button}")
-
-                if button:
-                    # Set playhead color (green blink)
-                    button.color = 'NoteEditor.Playhead'
-                    logger.info(f"✓ Playhead drawn at step {self._current_step} (col={col}, row={row})")
-                else:
-                    logger.warning(f"No button at col={col}, row={row}")
-        else:
-            logger.debug(f"Step {self._current_step} out of range (0-{total_steps-1})")
-
-    def _clear_playhead(self):
-        """Clear the previous playhead indicator"""
-        if not self._matrix or self._current_step < 0:
-            return
-
-        width = self._matrix.width if self._matrix else 8
-        height = self._matrix.height if self._matrix else 4
-
-        if 0 <= self._current_step < width * height:
-            row = self._current_step // width
-            col = self._current_step % width
-
-            if row < height and col < width:
-                button = self._matrix.get_button(col, row)
-                if button:
-                    # Let the note editor handle the normal button color
-                    button.color = None
-
-        self._current_step = -1
-
-    def update(self):
-        """Update component state"""
-        super().update()
-        if self.is_enabled():
-            self._update_playhead_state()
-        else:
-            if self._playhead_task and self._playhead_task.is_running:
-                self._playhead_task.kill()
-            self._clear_playhead()
-
-
-class NoteEditorWithPlayheadComponent(NoteEditorComponent):
-    """
-    Custom NoteEditorComponent that integrates playhead visualization.
-    Overrides button rendering to show the current playing step.
-    """
-
-    def __init__(self, *a, **k):
-        super().__init__(*a, **k)
-        self._playhead_step = -1
-        self._is_playing = False
-        self._playhead_task = None
-
-        # Task for periodic playhead updates
-        try:
-            self._playhead_task = self._tasks.add(task.loop(task.sequence(  # type: ignore
-                task.run(self._update_playhead_position),
-                task.wait(0.05)  # Update every 50ms for smooth playhead
-            )))
-            self._playhead_task.kill()
-        except Exception as e:
-            logger.warning(f"Failed to create playhead task: {e}")
-
-        # Listen to song playback state
-        self._NoteEditorWithPlayheadComponent__on_is_playing_changed.subject = self.song
-
-        logger.debug("NoteEditorWithPlayheadComponent initialized")
-
-    def disconnect(self):
-        """Clean up when component is disconnected"""
-        if self._playhead_task:
-            self._playhead_task.kill()
-        super().disconnect()
-
-    @listens('is_playing')  # type: ignore
-    def __on_is_playing_changed(self):
-        """Called when song playback starts/stops"""
-        self._update_playhead_state()
-
-    def _update_playhead_state(self):
-        """Update whether playhead should be actively tracking"""
-        if not self._playhead_task:
-            return
-
-        is_playing = self.song.is_playing if self.song else False
-
-        # Check if we have a valid clip
-        clip = self._clip if hasattr(self, '_clip') else None
-        clip_is_playing = False
-
-        if liveobj_valid(clip):
-            clip_is_playing = clip.is_arrangement_clip or clip.is_playing  # type: ignore
-
-        should_show_playhead = self.is_enabled() and is_playing and clip_is_playing
-
-        if should_show_playhead and not self._playhead_task.is_running:
-            self._playhead_task.restart()
-            self._is_playing = True
-            logger.debug("Playhead tracking started")
-        elif not should_show_playhead and self._playhead_task.is_running:
-            self._playhead_task.kill()
-            self._is_playing = False
-            old_step = self._playhead_step
-            self._playhead_step = -1
-            # Refresh the old playhead button
-            if 0 <= old_step < len(self.matrix):
-                self._update_button(old_step)
-            logger.debug("Playhead tracking stopped")
-
-    def _update_playhead_position(self):
-        """Update the current playhead position"""
-        if not self.is_enabled() or not self._clip or not liveobj_valid(self._clip):
-            return
-
-        # Get current playback position
-        try:
-            playing_position = self._clip.playing_position  # type: ignore
-        except AttributeError:
-            return
-
-        # Calculate which step is currently playing
-        page_time = self._page_time if hasattr(self, '_page_time') else 0.0
-        position_in_page = playing_position - page_time
-        current_step = int(position_in_page / self.step_length)
-
-        # Only update if step changed
-        if current_step != self._playhead_step:
-            old_step = self._playhead_step
-            self._playhead_step = current_step
-
-            # Refresh both old and new playhead buttons
-            if 0 <= old_step < len(self.matrix):
-                self._update_button(old_step)
-            if 0 <= current_step < len(self.matrix):
-                self._update_button(current_step)
-
-    def _update_button(self, index):
-        """Update a single button's color"""
-        if not self.matrix or index < 0 or index >= len(self.matrix):
-            return
-
-        button = self.matrix[index]
-        if not button:
-            return
-
-        # Determine button color based on state
-        if self._is_playing and index == self._playhead_step:
-            # Playhead takes priority
-            button.color = 'NoteEditor.Playhead'
-        else:
-            # Use normal note editor coloring
-            self._set_button_color_for_step(button, index)
-
-    def _set_button_color_for_step(self, button, step_index):
-        """Set button color based on note data (same as parent class logic)"""
-        # This mimics the parent class's button coloring logic
-        # We need to check if there's a note at this step
-        time_step = self._time_step(self._get_step_start_time(step_index))
-
-        has_notes = False
-        for time, length in time_step.connected_time_ranges():
-            notes = self._get_notes_info(time, length)
-            if notes:
-                has_notes = True
-                break
-
-        if has_notes:
-            button.color = 'NoteEditor.StepFilled'
-        else:
-            button.color = 'NoteEditor.StepEmpty'
-
-    def update(self):
-        """Update component state"""
-        super().update()
-        if self.is_enabled():
-            self._update_playhead_state()
-        else:
-            if self._playhead_task and self._playhead_task.is_running:
-                self._playhead_task.kill()
-            self._playhead_step = -1
+# Playhead components removed - not working properly yet
+# Will be re-implemented in the future with proper matrix visualization
 
 
 class DrumPadPitchProvider(EventObject):
@@ -620,20 +299,20 @@ class DrumStepSequencerComponent(Component):
                 logger.error(f"✗ GridResolutionComponent FAILED: {e}", exc_info=True)
                 raise
 
-            # Note editor with integrated playhead for step input
+            # Note editor for step input (standard component without playhead)
             try:
-                logger.debug("Creating NoteEditorWithPlayheadComponent...")
+                logger.debug("Creating NoteEditorComponent...")
                 # Inject sequencer_clip dependency
                 with inject(sequencer_clip=const(self._sequencer_clip)).everywhere():
-                    self._note_editor = NoteEditorWithPlayheadComponent(
+                    self._note_editor = NoteEditorComponent(
                         grid_resolution=self._grid_resolution,
                         parent=self
                     )
                 logger.debug("Setting pitch provider on note editor...")
                 self._note_editor.pitch_provider = self._pitch_provider
-                logger.info("✓ NoteEditorWithPlayheadComponent created successfully")
+                logger.info("✓ NoteEditorComponent created successfully")
             except Exception as e:
-                logger.error(f"✗ NoteEditorWithPlayheadComponent FAILED: {e}", exc_info=True)
+                logger.error(f"✗ NoteEditorComponent FAILED: {e}", exc_info=True)
                 raise
 
             # Paginator for page management
@@ -661,9 +340,9 @@ class DrumStepSequencerComponent(Component):
                 logger.warning(f"⚠ LoopSelectorComponent skipped: {e}")
                 self._loop_selector = None
 
-            # Playhead is now integrated into NoteEditorWithPlayheadComponent
+            # Playhead component removed for now (not working properly)
             self._playhead = None
-            logger.debug("✓ Playhead integrated into NoteEditor")
+            logger.debug("✓ Playhead component disabled")
 
             logger.info("=" * 60)
             logger.info("✓✓✓ DrumStepSequencerComponent INITIALIZED SUCCESSFULLY ✓✓✓")
@@ -766,11 +445,6 @@ class DrumStepSequencerComponent(Component):
         # Connect matrix to note editor - this handles step programming and visual feedback
         self._note_editor.set_matrix(matrix)
 
-        # Connect matrix to custom playhead for current step indicator
-        if self._playhead:
-            self._playhead.set_matrix(matrix)
-            logger.debug("✓ Playhead matrix connected")
-
         logger.info("Step sequence matrix set successfully")
 
     @property
@@ -806,6 +480,4 @@ class DrumStepSequencerComponent(Component):
         self._note_editor.update()
         if self._loop_selector:
             self._loop_selector.update()
-        if self._playhead:
-            self._playhead.update()
 

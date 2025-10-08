@@ -40,7 +40,14 @@ def create_mappings(control_surface):
 
         mappings["Fader_Modes"] = dict(
             volume=dict(component="Mixer", volume_controls="faders"),
-            pan=dict(component="Mixer", pan_controls="faders"),
+            pan=dict(
+                component="Drum_Rack_Level",
+                parameter_controls="faders",
+                behaviour=make_reenter_behaviour(
+                    ImmediateBehaviour,
+                    on_reenter=(lambda: control_surface.component_map["Drum_Rack_Level"].cycle_pad_offset()),
+                ),
+            ),
             send=dict(
                 component="Mixer",
                 send_controls="faders",

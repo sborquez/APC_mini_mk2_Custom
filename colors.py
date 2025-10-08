@@ -125,7 +125,7 @@ class Skin:
         # Grid resolution colors
         class Resolution:
             Selected = Rgb.AMBER
-            NotSelected = Rgb.AMBER_HALF
+            NotSelected = Rgb.AMBERISH
 
     class LoopSelector:
         # Loop/page selection
