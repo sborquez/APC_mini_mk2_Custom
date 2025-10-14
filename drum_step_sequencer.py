@@ -12,7 +12,7 @@ try:
     )
     from ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
     from ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
-    from ableton.v3.live import liveobj_valid
+    from ableton.v3.live import liveobj_valid, get_bar_length
     from Live.Clip import MidiNoteSpecification  # type: ignore
 except ImportError:
     from .ableton.v3.control_surface import Component
@@ -26,7 +26,7 @@ except ImportError:
     )
     from .ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
     from .ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
-    from .ableton.v3.live import liveobj_valid
+    from .ableton.v3.live import liveobj_valid, get_bar_length
     try:
         from Live.Clip import MidiNoteSpecification  # type: ignore
     except ImportError:
@@ -258,7 +258,12 @@ class CustomDrumGroupComponent(DrumGroupComponent):
 class CustomNoteEditorComponent(NoteEditorComponent):
     """
     Custom note editor that uses our CustomVelocityProvider instead of the framework's full_velocity.
-    Provides velocity-based step colors and updates existing notes instead of deleting them.
+    Provides velocity-based step colors and smart note management:
+    - Pressing a step with the same velocity as existing notes deletes them
+    - Pressing a step with different velocity updates existing notes
+    - Pressing an empty step adds new notes with current velocity
+    - Automatically extends clip loop length when notes are added outside current loop
+    - Automatically contracts clip loop length when notes are deleted and empty bars remain at the end
     """
 
     def __init__(self, custom_velocity_provider=None, *a, **k):
@@ -268,7 +273,7 @@ class CustomNoteEditorComponent(NoteEditorComponent):
         logger.debug("CustomNoteEditorComponent initialized with custom velocity provider")
 
     def _add_new_note_in_step(self, pitch, time):
-        """Override to use our custom velocity provider"""
+        """Override to use our custom velocity provider and handle loop extension"""
         if not self._has_clip():
             logger.warning("Cannot add note - no clip available")
             return
@@ -281,6 +286,25 @@ class CustomNoteEditorComponent(NoteEditorComponent):
         if MidiNoteSpecification is None:
             logger.error("MidiNoteSpecification not available - cannot add note")
             return
+
+        # Check if note is outside current loop and extend if necessary
+        note_end_time = time + self.step_length
+        if self._clip and hasattr(self._clip, 'loop_end'):
+            current_loop_end = self._clip.loop_end
+
+            if note_end_time > current_loop_end:
+                # Calculate how many bars to extend (round up to next bar)
+
+                bar_length = get_bar_length(self._clip)
+                bars_to_extend = int((note_end_time - current_loop_end) / bar_length) + 1
+                new_loop_end = current_loop_end + (bars_to_extend * bar_length)
+
+                # Extend the loop
+                if hasattr(self._clip, 'loop_end'):
+                    self._clip.loop_end = new_loop_end
+                if hasattr(self._clip, 'end_marker'):
+                    self._clip.end_marker = new_loop_end
+                logger.debug(f"Extended clip loop from {current_loop_end} to {new_loop_end} to accommodate note at {time}")
 
         note = MidiNoteSpecification(pitch=pitch,
           start_time=time,
@@ -301,6 +325,51 @@ class CustomNoteEditorComponent(NoteEditorComponent):
             logger.warning("Clip does not have deselect_all_notes method")
 
         logger.debug(f"Added note with velocity: {velocity}")
+
+    def _contract_loop_if_possible(self):
+        """Remove empty bars from the end of the loop"""
+        if not self._has_clip() or not self._clip or not hasattr(self._clip, 'loop_end'):
+            return
+
+        current_loop_end = self._clip.loop_end
+        bar_length = get_bar_length(self._clip)
+
+        # Start from the last bar and work backwards
+        last_bar_start = current_loop_end - bar_length
+
+        while last_bar_start >= bar_length:  # Don't go below 1 bar minimum
+            # Check if this bar has any notes
+            if self._bar_has_notes(last_bar_start, bar_length):
+                break  # Found a bar with notes, stop here
+
+            # This bar is empty, remove it
+            new_loop_end = last_bar_start
+            if hasattr(self._clip, 'loop_end'):
+                self._clip.loop_end = new_loop_end
+            if hasattr(self._clip, 'end_marker'):
+                self._clip.end_marker = new_loop_end
+
+            logger.debug(f"Contracted clip loop from {current_loop_end} to {new_loop_end} (removed empty bar)")
+            current_loop_end = new_loop_end
+            last_bar_start = current_loop_end - bar_length
+
+    def _bar_has_notes(self, bar_start, bar_length):
+        """Check if a bar contains any notes"""
+        if not self._has_clip() or not self._clip:
+            return False
+
+        try:
+            # Get all notes in this bar
+            notes = self._clip.get_notes_extended(
+                from_time=bar_start,
+                from_pitch=0,
+                time_span=bar_length,
+                pitch_span=128
+            )
+            return len(notes) > 0
+        except Exception as e:
+            logger.warning(f"Error checking for notes in bar: {e}")
+            return True  # If we can't check, assume there are notes to be safe
 
     def _get_velocity_for_step(self, step):
         """Get the velocity of the first note in a step"""
@@ -346,21 +415,25 @@ class CustomNoteEditorComponent(NoteEditorComponent):
                 existing_notes = time_step.filter_notes(self._clip_notes)
 
                 if existing_notes:
-                    # Check if any velocity button is pressed
-                    if (self._custom_velocity_provider and
-                        (self._custom_velocity_provider._accent_pressed or
-                         self._custom_velocity_provider._soft_pressed)):
-                        # Update existing notes with new velocity
-                        self._update_notes_velocity_in_step(step)
+                    # Get current velocity from velocity provider
+                    if self._custom_velocity_provider:
+                        current_velocity = self._custom_velocity_provider.velocity
                     else:
-                        # No velocity button pressed - check current velocity
-                        current_velocity = existing_notes[0].velocity
-                        if current_velocity == NORMAL_VELOCITY:
-                            # Already normal velocity - delete the note
-                            self._delete_notes_in_step(step)
-                        else:
-                            # Accent or soft velocity - change to normal velocity
-                            self._update_notes_velocity_in_step(step)
+                        current_velocity = NORMAL_VELOCITY
+
+                    # Get existing note velocity
+                    existing_velocity = existing_notes[0].velocity
+
+                    # If current velocity matches existing velocity, delete the note
+                    if current_velocity == existing_velocity:
+                        self._delete_notes_in_step(step)
+                        logger.debug(f"Deleted note with matching velocity: {current_velocity}")
+                        # After deleting notes, check if we can contract the loop
+                        self._contract_loop_if_possible()
+                    else:
+                        # Different velocity - update existing notes with new velocity
+                        self._update_notes_velocity_in_step(step)
+                        logger.debug(f"Updated note velocity: {existing_velocity} → {current_velocity}")
                 else:
                     # No existing notes - add new ones
                     for pitch in self._pitches:
@@ -405,8 +478,11 @@ class DrumStepSequencerComponent(Component):
     - Hold accent button and press step buttons to add notes with ACCENT_VELOCITY (127)
     - Hold soft button and press step buttons to add notes with SOFT_VELOCITY (60)
     - Press step buttons without holding any velocity button to add notes with NORMAL_VELOCITY (100)
-    - Pressing a step with existing notes updates their velocity instead of removing them
+    - Pressing a step with existing notes of the same velocity deletes them
+    - Pressing a step with existing notes of different velocity updates their velocity
     - Step colors indicate velocity: White (normal), Half-brightness (soft), Amber (accent)
+    - Clip loop automatically extends when notes are added outside current loop length
+    - Clip loop automatically contracts when notes are deleted and empty bars remain at the end
     """
 
     # Toggle button for switching between selection and playable mode
