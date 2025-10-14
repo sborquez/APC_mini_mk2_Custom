@@ -13,6 +13,7 @@ try:
     from ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
     from ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
     from ableton.v3.live import liveobj_valid
+    from Live.Clip import MidiNoteSpecification  # type: ignore
 except ImportError:
     from .ableton.v3.control_surface import Component
     from .ableton.v3.control_surface.components import (
@@ -26,6 +27,11 @@ except ImportError:
     from .ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
     from .ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
     from .ableton.v3.live import liveobj_valid
+    try:
+        from Live.Clip import MidiNoteSpecification  # type: ignore
+    except ImportError:
+        # Fallback for when Live.Clip is not available
+        MidiNoteSpecification = None
 
 from .logger_config import get_logger
 
@@ -46,8 +52,47 @@ SOFT_VELOCITY = 60
 ACCENT_VELOCITY = 127
 
 
-# Playhead components removed - not working properly yet
-# Will be re-implemented in the future with proper matrix visualization
+class CustomVelocityProvider(EventObject):
+    """
+    Custom velocity provider that responds to accent and soft button states.
+    This replaces the framework's full_velocity component for our custom velocity control.
+    """
+    enabled = listenable_property.managed(False)
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._accent_pressed = False
+        self._soft_pressed = False
+        self._current_velocity = NORMAL_VELOCITY
+        logger.debug(f"CustomVelocityProvider initialized with velocity: {self._current_velocity}")
+
+    def set_accent_pressed(self, pressed):
+        """Set accent button state"""
+        if self._accent_pressed != pressed:
+            self._accent_pressed = pressed
+            self._update_velocity()
+            logger.debug(f"Accent button {'pressed' if pressed else 'released'}, velocity: {self._current_velocity}")
+
+    def set_soft_pressed(self, pressed):
+        """Set soft button state"""
+        if self._soft_pressed != pressed:
+            self._soft_pressed = pressed
+            self._update_velocity()
+            logger.debug(f"Soft button {'pressed' if pressed else 'released'}, velocity: {self._current_velocity}")
+
+    def _update_velocity(self):
+        """Update current velocity based on button states"""
+        if self._accent_pressed:
+            self._current_velocity = ACCENT_VELOCITY
+        elif self._soft_pressed:
+            self._current_velocity = SOFT_VELOCITY
+        else:
+            self._current_velocity = NORMAL_VELOCITY
+
+    @property
+    def velocity(self):
+        """Get the current velocity value"""
+        return self._current_velocity
 
 
 class DrumPadPitchProvider(EventObject):
@@ -64,7 +109,7 @@ class DrumPadPitchProvider(EventObject):
     def __init__(self, drum_group_component=None, *a, **k):
         super().__init__(*a, **k)
         self._drum_group = drum_group_component  # Can be None initially, set later
-        logger.info(f"✓ DrumPadPitchProvider initialized with pitches: {self.pitches}")
+        logger.info(f"DrumPadPitchProvider initialized with pitches: {self.pitches}")
 
     def set_pitch(self, pitch):
         """Manually set the pitch to edit"""
@@ -101,7 +146,7 @@ class CustomDrumGroupComponent(DrumGroupComponent):
         # Listen to target track changes
         if self._target_track:
             self.register_slot(self._target_track, self._on_target_track_changed, "target_track")
-            logger.debug("✓ CustomDrumGroup: Registered target track listener")
+            logger.debug("CustomDrumGroup: Registered target track listener")
 
         # If in selection-only mode, always keep pads in listenable mode
         if self._selection_only:
@@ -168,7 +213,7 @@ class CustomDrumGroupComponent(DrumGroupComponent):
                         # Update pitch provider if available
                         if self._pitch_provider:
                             self._pitch_provider.set_pitch(note)
-                            logger.info(f"✓ Selected drum pad: {pad_name} (MIDI note {note})")
+                            logger.info(f"Selected drum pad: {pad_name} (MIDI note {note})")
                         else:
                             logger.warning("No pitch provider available!")
 
@@ -210,6 +255,143 @@ class CustomDrumGroupComponent(DrumGroupComponent):
         if drum_rack_device:
             self.set_drum_group_device(drum_rack_device)
 
+class CustomNoteEditorComponent(NoteEditorComponent):
+    """
+    Custom note editor that uses our CustomVelocityProvider instead of the framework's full_velocity.
+    Provides velocity-based step colors and updates existing notes instead of deleting them.
+    """
+
+    def __init__(self, custom_velocity_provider=None, *a, **k):
+        # Don't pass full_velocity to parent - we'll handle it ourselves
+        super().__init__(*a, **k)
+        self._custom_velocity_provider = custom_velocity_provider
+        logger.debug("CustomNoteEditorComponent initialized with custom velocity provider")
+
+    def _add_new_note_in_step(self, pitch, time):
+        """Override to use our custom velocity provider"""
+        if not self._has_clip():
+            logger.warning("Cannot add note - no clip available")
+            return
+
+        if self._custom_velocity_provider:
+            velocity = self._custom_velocity_provider.velocity
+        else:
+            velocity = NORMAL_VELOCITY  # Fallback to normal velocity
+
+        if MidiNoteSpecification is None:
+            logger.error("MidiNoteSpecification not available - cannot add note")
+            return
+
+        note = MidiNoteSpecification(pitch=pitch,
+          start_time=time,
+          duration=(self.step_length),
+          velocity=velocity,
+          mute=False)
+
+        # Add safety checks for clip methods
+        if hasattr(self._clip, 'add_new_notes'):
+            self._clip.add_new_notes((note,))  # type: ignore
+        else:
+            logger.error("Clip does not have add_new_notes method")
+            return
+
+        if hasattr(self._clip, 'deselect_all_notes'):
+            self._clip.deselect_all_notes()  # type: ignore
+        else:
+            logger.warning("Clip does not have deselect_all_notes method")
+
+        logger.debug(f"Added note with velocity: {velocity}")
+
+    def _get_velocity_for_step(self, step):
+        """Get the velocity of the first note in a step"""
+        if not self._has_clip():
+            return None
+
+        time_step = self._time_step(self._get_step_start_time(step))
+        notes = time_step.filter_notes(self._clip_notes)
+
+        if notes:
+            return notes[0].velocity
+        return None
+
+    def _get_color_for_step(self, index, visible_steps):
+        """Override to provide velocity-based colors"""
+        # Get the base color from parent
+        base_color = super()._get_color_for_step(index, visible_steps)
+
+        # If there's a note in this step, check its velocity for color coding
+        if self._has_clip() and index in visible_steps:
+            step = visible_steps[index]
+            notes = step.filter_notes(self._clip_notes)
+
+            if len(notes) > 0:
+                velocity = notes[0].velocity
+
+                # Determine color based on velocity
+                if velocity >= ACCENT_VELOCITY:
+                    return "DrumStepSequencer.StepAccent"  # Accent velocity (127)
+                elif velocity <= SOFT_VELOCITY:
+                    return "DrumStepSequencer.StepSoft"    # Soft velocity (60)
+                else:
+                    return "DrumStepSequencer.StepNormal"  # Normal velocity (100)
+
+        return base_color
+
+    def _on_release_step(self, step, can_add_or_remove=False):
+        """Override to handle velocity-based note operations"""
+        if step.is_active:
+            if can_add_or_remove:
+                # Check if there are existing notes in this step
+                time_step = self._time_step(self._get_step_start_time(step))
+                existing_notes = time_step.filter_notes(self._clip_notes)
+
+                if existing_notes:
+                    # Check if any velocity button is pressed
+                    if (self._custom_velocity_provider and
+                        (self._custom_velocity_provider._accent_pressed or
+                         self._custom_velocity_provider._soft_pressed)):
+                        # Update existing notes with new velocity
+                        self._update_notes_velocity_in_step(step)
+                    else:
+                        # No velocity button pressed - check current velocity
+                        current_velocity = existing_notes[0].velocity
+                        if current_velocity == NORMAL_VELOCITY:
+                            # Already normal velocity - delete the note
+                            self._delete_notes_in_step(step)
+                        else:
+                            # Accent or soft velocity - change to normal velocity
+                            self._update_notes_velocity_in_step(step)
+                else:
+                    # No existing notes - add new ones
+                    for pitch in self._pitches:
+                        self._add_note_in_step(step, pitch)
+
+        step.is_active = False
+        self._refresh_active_steps()
+
+    def _update_notes_velocity_in_step(self, step):
+        """Update the velocity of existing notes in a step"""
+        if not self._has_clip() or not self._custom_velocity_provider:
+            return
+
+        new_velocity = self._custom_velocity_provider.velocity
+        time_step = self._time_step(self._get_step_start_time(step))
+        existing_notes = time_step.filter_notes(self._clip_notes)
+
+        if existing_notes:
+            # Update velocity for all notes in this step
+            for note in existing_notes:
+                note.velocity = new_velocity
+
+            # Apply the modifications to the clip
+            if hasattr(self._clip, 'apply_note_modifications'):
+                self._clip.apply_note_modifications(self._clip_notes)  # type: ignore
+            else:
+                logger.warning("Clip does not have apply_note_modifications method")
+
+            logger.debug(f"Updated {len(existing_notes)} note(s) to velocity: {new_velocity}")
+
+
 class DrumStepSequencerComponent(Component):
     """
     Custom drum step sequencer component for APC Mini MK2.
@@ -218,6 +400,13 @@ class DrumStepSequencerComponent(Component):
     - Drum group: 4x4 grid (16 drum pads) in left-bottom area
     - Step sequencer: 4x8 grid (32 steps) in top area
     - Control grid: 2x4 grid (8 control buttons) in right-bottom area
+
+    Velocity Control:
+    - Hold accent button and press step buttons to add notes with ACCENT_VELOCITY (127)
+    - Hold soft button and press step buttons to add notes with SOFT_VELOCITY (60)
+    - Press step buttons without holding any velocity button to add notes with NORMAL_VELOCITY (100)
+    - Pressing a step with existing notes updates their velocity instead of removing them
+    - Step colors indicate velocity: White (normal), Half-brightness (soft), Amber (accent)
     """
 
     # Toggle button for switching between selection and playable mode
@@ -254,23 +443,28 @@ class DrumStepSequencerComponent(Component):
             # Call parent init
             try:
                 super().__init__(name=name, *a, **k)
-                logger.debug("✓ Parent Component.__init__ successful")
+                logger.debug("Parent Component.__init__ successful")
             except Exception as e:
-                logger.error(f"✗ Parent Component.__init__ FAILED: {e}", exc_info=True)
+                logger.error(f"Parent Component.__init__ FAILED: {e}", exc_info=True)
                 raise
 
             # Store dependencies
             self._target_track = target_track
-            logger.debug(f"✓ Stored target_track: {target_track}")
+            logger.debug(f"Stored target_track: {target_track}")
 
             # Listen to target track changes
             if self._target_track:
                 self.register_slot(self._target_track, self._on_target_track_changed, "target_track")
-                logger.debug("✓ Registered target track listener")
+                logger.debug("Registered target track listener")
 
-            # Velocity state
-            self._current_velocity = NORMAL_VELOCITY
-            logger.debug(f"✓ Set velocity: {self._current_velocity}")
+            # Create custom velocity provider
+            try:
+                logger.debug("Creating CustomVelocityProvider...")
+                self._velocity_provider = CustomVelocityProvider()
+                logger.info("CustomVelocityProvider created successfully")
+            except Exception as e:
+                logger.error(f"CustomVelocityProvider FAILED: {e}", exc_info=True)
+                raise
 
             # Create pitch provider first (needed by drum group)
             try:
@@ -278,9 +472,9 @@ class DrumStepSequencerComponent(Component):
                 self._pitch_provider = DrumPadPitchProvider(
                     drum_group_component=None  # Will be set after drum group is created
                 )
-                logger.info("✓ DrumPadPitchProvider created successfully")
+                logger.info("DrumPadPitchProvider created successfully")
             except Exception as e:
-                logger.error(f"✗ DrumPadPitchProvider FAILED: {e}", exc_info=True)
+                logger.error(f"DrumPadPitchProvider FAILED: {e}", exc_info=True)
                 raise
 
             # Initialize composed drum group component with pitch provider reference
@@ -296,9 +490,9 @@ class DrumStepSequencerComponent(Component):
                 self._drum_group.set_parent_sequencer(self)
                 # Update the pitch provider's drum group reference
                 self._pitch_provider._drum_group = self._drum_group
-                logger.info("✓ CustomDrumGroupComponent created successfully")
+                logger.info("CustomDrumGroupComponent created successfully")
             except Exception as e:
-                logger.error(f"✗ CustomDrumGroupComponent FAILED: {e}", exc_info=True)
+                logger.error(f"CustomDrumGroupComponent FAILED: {e}", exc_info=True)
                 raise
 
             # Create sequencer clip helper
@@ -307,9 +501,9 @@ class DrumStepSequencerComponent(Component):
                 self._sequencer_clip = SequencerClip(
                     target_track=target_track
                 )
-                logger.info("✓ SequencerClip created successfully")
+                logger.info("SequencerClip created successfully")
             except Exception as e:
-                logger.error(f"✗ SequencerClip FAILED: {e}", exc_info=True)
+                logger.error(f"SequencerClip FAILED: {e}", exc_info=True)
                 raise
 
             # Create our own grid resolution component
@@ -319,24 +513,24 @@ class DrumStepSequencerComponent(Component):
                     name="Grid_Resolution",
                     parent=self
                 )
-                logger.info("✓ GridResolutionComponent created successfully")
+                logger.info("GridResolutionComponent created successfully")
             except Exception as e:
-                logger.error(f"✗ GridResolutionComponent FAILED: {e}", exc_info=True)
+                logger.error(f"GridResolutionComponent FAILED: {e}", exc_info=True)
                 raise
 
-            # Note editor for step input (regular component - we'll handle locking differently)
+            # Note editor for step input (custom component with velocity control)
             try:
-                logger.debug("Creating NoteEditorComponent...")
-                logger.info(f"📎 Injecting CustomSequencerClip: {self._sequencer_clip}")
+                logger.debug("Creating CustomNoteEditorComponent...")
                 # Inject sequencer_clip dependency
                 with inject(sequencer_clip=const(self._sequencer_clip)).everywhere():
-                    self._note_editor = NoteEditorComponent(
+                    self._note_editor = CustomNoteEditorComponent(
+                        custom_velocity_provider=self._velocity_provider,
                         grid_resolution=self._grid_resolution,
                         parent=self
                     )
                 logger.debug("Setting pitch provider on note editor...")
                 self._note_editor.pitch_provider = self._pitch_provider
-                logger.info("✓ NoteEditorComponent created successfully")
+                logger.info("CustomNoteEditorComponent created successfully")
 
                 # Check if the note editor has a sequencer_clip property
                 if hasattr(self._note_editor, 'sequencer_clip'):
@@ -355,9 +549,9 @@ class DrumStepSequencerComponent(Component):
                     note_editor=self._note_editor,
                     parent=self
                 )
-                logger.info("✓ NoteEditorPaginator created successfully")
+                logger.info("NoteEditorPaginator created successfully")
             except Exception as e:
-                logger.error(f"✗ NoteEditorPaginator FAILED: {e}", exc_info=True)
+                logger.error(f"NoteEditorPaginator FAILED: {e}", exc_info=True)
                 raise
 
             # Loop selector (optional - may fail due to dependencies)
@@ -368,22 +562,22 @@ class DrumStepSequencerComponent(Component):
                     paginator=self._paginator,
                     parent=self
                 )
-                logger.info("✓ LoopSelectorComponent created successfully")
+                logger.info("LoopSelectorComponent created successfully")
             except Exception as e:
-                logger.warning(f"⚠ LoopSelectorComponent skipped: {e}")
+                logger.warning(f"LoopSelectorComponent skipped: {e}")
                 self._loop_selector = None
 
             # Playhead component removed for now (not working properly)
             self._playhead = None
-            logger.debug("✓ Playhead component disabled")
+            logger.debug("Playhead component disabled")
 
             logger.info("=" * 60)
-            logger.info("✓✓✓ DrumStepSequencerComponent INITIALIZED SUCCESSFULLY ✓✓✓")
+            logger.info("✓✓DrumStepSequencerComponent INITIALIZED SUCCESSFULLY ✓✓✓")
             logger.info("=" * 60)
 
         except Exception as e:
             logger.error("=" * 60)
-            logger.error(f"✗✗✗ DrumStepSequencerComponent INITIALIZATION FAILED ✗✗✗")
+            logger.error(f"✗✗DrumStepSequencerComponent INITIALIZATION FAILED ✗✗✗")
             logger.error(f"Error: {e}")
             logger.error("=" * 60)
             logger.error("Full traceback:", exc_info=True)
@@ -439,35 +633,44 @@ class DrumStepSequencerComponent(Component):
     @velocity_accent_button.pressed
     def _on_velocity_accent_button_pressed(self, button):
         """Handle accent button press"""
-        self._current_velocity = ACCENT_VELOCITY
+        self._velocity_provider.set_accent_pressed(True)
         # Change button color to pulsing
         button.color = "DrumStepSequencer.VelocityAccentOn"
+        logger.info(f"Accent button pressed - velocity: {self._velocity_provider.velocity}")
 
     @velocity_accent_button.released
     def _on_velocity_accent_button_released(self, button):
         """Handle accent button release"""
-        self._current_velocity = NORMAL_VELOCITY
+        self._velocity_provider.set_accent_pressed(False)
         # Change button color back to dim
         button.color = "DrumStepSequencer.VelocityAccentOff"
+        logger.info(f"Accent button released - velocity: {self._velocity_provider.velocity}")
 
     @velocity_soft_button.pressed
     def _on_velocity_soft_button_pressed(self, button):
         """Handle soft button press"""
-        self._current_velocity = SOFT_VELOCITY
+        self._velocity_provider.set_soft_pressed(True)
         # Change button color to pulsing
         button.color = "DrumStepSequencer.VelocitySoftOn"
+        logger.info(f"Soft button pressed - velocity: {self._velocity_provider.velocity}")
 
     @velocity_soft_button.released
     def _on_velocity_soft_button_released(self, button):
         """Handle soft button release"""
-        self._current_velocity = NORMAL_VELOCITY
+        self._velocity_provider.set_soft_pressed(False)
         # Change button color back to half-brightness
         button.color = "DrumStepSequencer.VelocitySoftOff"
+        logger.info(f"Soft button released - velocity: {self._velocity_provider.velocity}")
 
     @property
     def drum_group(self):
         """Access to the composed drum group component"""
         return self._drum_group
+
+    @property
+    def current_velocity(self):
+        """Get the current velocity value from the velocity provider"""
+        return self._velocity_provider.velocity if self._velocity_provider else NORMAL_VELOCITY
 
     @property
     def drum_group_matrix(self):

@@ -98,6 +98,11 @@ class Skin:
         PageFilled = Rgb.BLUE
         CurrentPage = Rgb.BLUE
 
+        # Velocity-based step colors
+        StepNormal = Rgb.WHITE        # Normal velocity (100)
+        StepSoft = Rgb.YELLOW     # Soft velocity (60) - half brightness
+        StepAccent = Rgb.AMBER        # Accent velocity (127) - amber color
+
         # Mode toggle button colors - following proper naming convention
         ModeToggleOff = Rgb.GREENISH  # Greenish for selection mode (off state)
         ModeToggleOn = Rgb.GREEN      # Green for playable mode (on state)
