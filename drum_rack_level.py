@@ -86,7 +86,8 @@ class DrumRackLevelComponent(DeviceComponent):
 
     def _on_target_track_changed(self):
         """Handle target track changes."""
-        logger.debug("Target track changed")
+        track_name = getattr(self._target_track.target_track, 'name', 'None') if self._target_track and self._target_track.target_track else 'None'
+        logger.info(f"🎯 DrumRackLevel: Target track changed to: {track_name}")
         self._update_drum_rack()
 
     def _setup_drum_rack_listeners(self):
@@ -102,8 +103,9 @@ class DrumRackLevelComponent(DeviceComponent):
 
     def _on_device_changed(self, device):
         """
-        Override the parent method to handle device changes while respecting device lock.
+        Override the parent method to handle device changes while respecting device lock and track lock.
         """
+
         # Check if device is locked
         if hasattr(self, '_device_provider') and self._device_provider and self._device_provider.is_locked_to_device:
             # Device is locked - only update if this is the locked device
@@ -123,7 +125,7 @@ class DrumRackLevelComponent(DeviceComponent):
     def _update_drum_rack(self):
         """
         Find and set the drum rack device on the current target track.
-        Respects device lock - only updates if device is not locked.
+        Respects device lock and track lock from DrumStepSequencerComponent.
         """
         logger.debug("Updating drum rack from target track...")
 
@@ -131,6 +133,8 @@ class DrumRackLevelComponent(DeviceComponent):
         if hasattr(self, '_device_provider') and self._device_provider and self._device_provider.is_locked_to_device:
             logger.debug("Device is locked - skipping drum rack update from target track")
             return
+
+        # Note: Track locking now handled by framework's TargetTrackComponent
 
         if not self._target_track:
             logger.warning("No target_track available")
@@ -242,7 +246,6 @@ class DrumRackLevelComponent(DeviceComponent):
         try:
             # Get visible drum pads from the drum rack
             if not hasattr(self._drum_rack, 'visible_drum_pads'):
-                logger.debug("Drum rack has no visible_drum_pads attribute")
                 return None
 
             visible_pads = self._drum_rack.visible_drum_pads  # type: ignore
@@ -251,30 +254,25 @@ class DrumRackLevelComponent(DeviceComponent):
             visible_pad_index = self._pad_offset + pad_index
 
             if visible_pad_index >= len(visible_pads):
-                logger.debug(f"Visible pad index {visible_pad_index} out of range (max: {len(visible_pads)-1})")
                 return None
 
             drum_pad = visible_pads[visible_pad_index]
 
             if not liveobj_valid(drum_pad):
-                logger.debug(f"Drum pad {visible_pad_index} not valid")
                 return None
 
             # Check if pad has chains
             if not hasattr(drum_pad, 'chains') or not drum_pad.chains:
-                logger.debug(f"Drum pad {visible_pad_index} has no chains")
                 return None
 
             # Get first chain
             chain = drum_pad.chains[0]
 
             if not liveobj_valid(chain):
-                logger.debug(f"Chain not valid for pad {visible_pad_index}")
                 return None
 
             # Find Instrument Rack in the chain
             if not hasattr(chain, 'devices'):
-                logger.debug(f"Chain has no devices for pad {visible_pad_index}")
                 return None
 
             for device in chain.devices:

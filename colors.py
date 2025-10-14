@@ -54,7 +54,7 @@ class Rgb:
     PURPLE = make_simple_color(81)
     OCEAN = make_simple_color(41)
     BLUE = make_simple_color(45)
-    WHITE = make_simple_color(127)
+    WHITE = make_simple_color(3)
     WHITE_HALF = SimpleColor(127, channel=HALF_BRIGHTNESS_CHANNEL)
 
 class Skin:
@@ -69,6 +69,10 @@ class Skin:
         SceneTriggered = Basic.BLINK
         StopClipTriggered = Basic.BLINK
         StopClip = Basic.ON
+
+    class TargetTrack:
+        LockOff = Rgb.YELLOWISH  # Yellowish for unlocked state
+        LockOn = Rgb.BLUE        # Blue for locked state
 
     class DrumGroup:
         PadEmpty = Rgb.GREY
@@ -97,6 +101,10 @@ class Skin:
         # Mode toggle button colors - following proper naming convention
         ModeToggleOff = Rgb.GREENISH  # Greenish for selection mode (off state)
         ModeToggleOn = Rgb.GREEN      # Green for playable mode (on state)
+
+        # Lock button colors
+        LockOff = Rgb.YELLOWISH  # Yellowish for unlocked state
+        LockOn = Rgb.BLUE        # Blue for locked state
 
         # Velocity button states (off/on)
         # NOTE: APC Mini MK2 may not support pulse/half-brightness via MIDI channels

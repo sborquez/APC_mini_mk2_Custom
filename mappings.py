@@ -28,7 +28,13 @@ def create_mappings(control_surface):
 
         mappings["Mixer"] = dict(master_track_volume_control="master_fader")
 
-        mappings["Session"] = dict(clip_slot_select_button="shift_button")
+        mappings["Target_Track"] = dict(
+            lock_button="control_pads_raw[1]",  # Button 93 - Lock to current track
+        )
+
+        mappings["Session"] = dict(
+            clip_slot_select_button="shift_button",
+        )
 
         mappings["Track_Button_Modes"] = dict(
             clip_stop=dict(component="Session", stop_track_clip_buttons="track_buttons"),

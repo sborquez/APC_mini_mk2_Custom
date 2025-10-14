@@ -1,39 +1,33 @@
 from __future__ import absolute_import, print_function, unicode_literals
+
 try:
     from ableton.v3.control_surface import Component
     from ableton.v3.control_surface.components import (
-        StepSequenceComponent,
         NoteEditorComponent,
         LoopSelectorComponent,
-        PlayheadComponent,
         GridResolutionComponent,
         DrumGroupComponent,
-        PlayableComponent,
         NoteEditorPaginator,
         SequencerClip
     )
-    from ableton.v3.control_surface.controls import ButtonControl, control_matrix, ToggleButtonControl
-    from ableton.v3.base import depends, listens, listenable_property, EventObject, inject, const, task
+    from ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
+    from ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
     from ableton.v3.live import liveobj_valid
 except ImportError:
     from .ableton.v3.control_surface import Component
     from .ableton.v3.control_surface.components import (
-        StepSequenceComponent,
         NoteEditorComponent,
         LoopSelectorComponent,
-        PlayheadComponent,
         GridResolutionComponent,
         DrumGroupComponent,
-        PlayableComponent,
         NoteEditorPaginator,
         SequencerClip
     )
-    from .ableton.v3.control_surface.controls import ButtonControl, control_matrix, ToggleButtonControl
-    from .ableton.v3.base import depends, listens, listenable_property, EventObject, inject, const, task
+    from .ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
+    from .ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
     from .ableton.v3.live import liveobj_valid
 
 from .logger_config import get_logger
-from .colors import Skin
 
 logger = get_logger('drum_step_sequencer')
 
@@ -45,7 +39,6 @@ SEQUENCE_STEPS_HEIGHT = 4  # 2 bars of 16 steps = 32 steps total
 # Default settings
 DEFAULT_SEQUENCE_LENGTH = 1  # bars
 DEFAULT_RESOLUTION = 16  # 1/16 notes
-DEFAULT_GROOVE = 0  # -100 to 100
 
 # Velocity modes
 NORMAL_VELOCITY = 100
@@ -94,18 +87,33 @@ class CustomDrumGroupComponent(DrumGroupComponent):
     modification would require external MIDI processing or Live's Velocity device.
     """
 
+    @depends(target_track=None)
     def __init__(self, name="Drum_Group", target_track=None, selection_only=False, pitch_provider=None, *a, **k):
         super().__init__(name=name, target_track=target_track, *a, **k)
         self._selection_only = selection_only
         self._pitch_provider = pitch_provider
         self._selected_drum_pad_note = None
+        self._parent_sequencer = None  # Will be set by parent
+        self._target_track = target_track
 
         logger.debug(f"CustomDrumGroupComponent init: selection_only={selection_only}, pitch_provider={pitch_provider}")
+
+        # Listen to target track changes
+        if self._target_track:
+            self.register_slot(self._target_track, self._on_target_track_changed, "target_track")
+            logger.debug("✓ CustomDrumGroup: Registered target track listener")
 
         # If in selection-only mode, always keep pads in listenable mode
         if self._selection_only:
             self._set_control_pads_from_script(True)
             logger.debug("Set control pads from script (listenable mode)")
+
+    def set_parent_sequencer(self, parent_sequencer):
+        """Set reference to parent DrumStepSequencerComponent for lock state checking"""
+        self._parent_sequencer = parent_sequencer
+        logger.debug(f"CustomDrumGroup: Set parent sequencer reference: {parent_sequencer}")
+
+    # Note: Lock functionality now handled by framework's TargetTrackComponent
 
     def set_matrix(self, matrix):
         """Override set_matrix to ensure selection-only mode is applied after matrix connection"""
@@ -181,22 +189,32 @@ class CustomDrumGroupComponent(DrumGroupComponent):
             else:
                 logger.warning("Cannot use drum group - no drum rack device")
 
+    def _on_target_track_changed(self):
+        """Handle target track changes from framework's TargetTrackComponent"""
+        if not self._target_track:
+            return
+        current_track = self._target_track.target_track
+        track_name = getattr(current_track, 'name', 'Unknown') if current_track else 'None'
+
+        # Update drum group device for the new target track
+        if not current_track:
+            return
+
+        # Find drum rack device on the target track
+        drum_rack_device = None
+        for device in current_track.devices:
+            if hasattr(device, 'can_have_chains') and device.can_have_chains:
+                drum_rack_device = device
+                break
+
+        if drum_rack_device:
+            self.set_drum_group_device(drum_rack_device)
+
 class DrumStepSequencerComponent(Component):
     """
     Custom drum step sequencer component for APC Mini MK2.
 
-    APC Mini MK2 8x8 Grid Layout (64 pads total, MIDI notes 64-127):
-
-    Pads 0-31:  Top 4x8 rows - Step sequencer (32 steps for 2 bars of 16 steps)
-    Pads 32-47: Middle 2x8 rows - Reserved for future use
-    Pads 48-51: Row 6, cols 0-3 - Drum group (left 4x4, top row)
-    Pads 52-55: Row 6, cols 4-7 - Control grid (right 4x4, top row)
-    Pads 56-59: Row 7, cols 0-3 - Drum group (left 4x4, bottom row)
-    Pads 60-63: Row 7, cols 4-7 - Control grid (right 4x4, bottom row)
-
-    (The actual MIDI numbers are set in the elements.py file)
-
-    Current implementation:
+    Layout:
     - Drum group: 4x4 grid (16 drum pads) in left-bottom area
     - Step sequencer: 4x8 grid (32 steps) in top area
     - Control grid: 2x4 grid (8 control buttons) in right-bottom area
@@ -245,6 +263,11 @@ class DrumStepSequencerComponent(Component):
             self._target_track = target_track
             logger.debug(f"✓ Stored target_track: {target_track}")
 
+            # Listen to target track changes
+            if self._target_track:
+                self.register_slot(self._target_track, self._on_target_track_changed, "target_track")
+                logger.debug("✓ Registered target track listener")
+
             # Velocity state
             self._current_velocity = NORMAL_VELOCITY
             logger.debug(f"✓ Set velocity: {self._current_velocity}")
@@ -269,6 +292,8 @@ class DrumStepSequencerComponent(Component):
                     selection_only=True,
                     pitch_provider=self._pitch_provider,
                 )
+                # Set parent sequencer reference for lock state checking
+                self._drum_group.set_parent_sequencer(self)
                 # Update the pitch provider's drum group reference
                 self._pitch_provider._drum_group = self._drum_group
                 logger.info("✓ CustomDrumGroupComponent created successfully")
@@ -299,9 +324,10 @@ class DrumStepSequencerComponent(Component):
                 logger.error(f"✗ GridResolutionComponent FAILED: {e}", exc_info=True)
                 raise
 
-            # Note editor for step input (standard component without playhead)
+            # Note editor for step input (regular component - we'll handle locking differently)
             try:
                 logger.debug("Creating NoteEditorComponent...")
+                logger.info(f"📎 Injecting CustomSequencerClip: {self._sequencer_clip}")
                 # Inject sequencer_clip dependency
                 with inject(sequencer_clip=const(self._sequencer_clip)).everywhere():
                     self._note_editor = NoteEditorComponent(
@@ -311,8 +337,15 @@ class DrumStepSequencerComponent(Component):
                 logger.debug("Setting pitch provider on note editor...")
                 self._note_editor.pitch_provider = self._pitch_provider
                 logger.info("✓ NoteEditorComponent created successfully")
+
+                # Check if the note editor has a sequencer_clip property
+                if hasattr(self._note_editor, 'sequencer_clip'):
+                    logger.info(f"NoteEditor has sequencer_clip: {self._note_editor.sequencer_clip}")
+                else:
+                    logger.info("NoteEditor does not have sequencer_clip property")
+
             except Exception as e:
-                logger.error(f"✗ NoteEditorComponent FAILED: {e}", exc_info=True)
+                logger.error(f"NoteEditorComponent FAILED: {e}", exc_info=True)
                 raise
 
             # Paginator for page management
@@ -365,6 +398,33 @@ class DrumStepSequencerComponent(Component):
         # When button is OFF (is_toggled=False) → Selection mode (selection_only=True)
         self.set_selection_only_mode(not is_toggled)
         logger.info(f"Mode set to: {'Selection' if not is_toggled else 'Playable'}")
+
+    def _on_target_track_changed(self):
+        """Handle target track changes from framework's TargetTrackComponent"""
+        if not self._target_track:
+            return
+        current_track = self._target_track.target_track
+        track_name = getattr(current_track, 'name', 'Unknown') if current_track else 'None'
+        is_locked = getattr(self._target_track, 'is_locked_to_track', False)
+        logger.info(f"Target track changed: {track_name} (locked: {is_locked})")
+
+        # Update child components to use new target track
+        self._update_child_components()
+
+        # Update drum group device for the new target track
+        if not current_track:
+            return
+
+        # Find drum rack device on the target track
+        drum_rack_device = None
+        for device in current_track.devices:
+            if hasattr(device, 'can_have_chains') and device.can_have_chains:
+                drum_rack_device = device
+                break
+
+        if drum_rack_device:
+            self.set_drum_group_device(drum_rack_device)
+
 
     @resolution_button.pressed
     def _on_resolution_button_pressed(self, button):
@@ -434,7 +494,6 @@ class DrumStepSequencerComponent(Component):
 
     def set_drum_group_device(self, drum_group_device):
         """Set the drum group device for the drum group component"""
-        logger.debug(f"Setting drum group device: {drum_group_device}")
         self._drum_group.set_drum_group_device(drum_group_device)
 
     def set_step_sequence_matrix(self, matrix):
@@ -469,6 +528,29 @@ class DrumStepSequencerComponent(Component):
         self.set_selection_only_mode(new_mode)
         logger.info(f"Toggled selection-only mode to: {new_mode}")
         return new_mode
+
+    def _update_child_components(self):
+        """Update all child components to use the current target track"""
+        if not self._target_track:
+            return
+        current_track = self._target_track.target_track
+        if not current_track:
+            return
+        # Update drum group to use current target track
+        if hasattr(self._drum_group, 'set_target_track'):
+            self._drum_group.set_target_track(current_track)
+
+        # Update sequencer clip to use current target track
+        if hasattr(self._sequencer_clip, 'set_target_track'):
+            self._sequencer_clip.set_target_track(current_track)
+
+    def set_drum_rack_level_component(self, drum_rack_level_component):
+        """Set reference to the DrumRackLevelComponent for coordination"""
+        if not drum_rack_level_component:
+            return
+        drum_rack_level_component.set_drum_step_sequencer(self)
+
+    # Note: Component target management now handled by framework's TargetTrackComponent
 
     def update(self):
         """Update the component"""

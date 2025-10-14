@@ -1,12 +1,12 @@
 try:
     from ableton.v3.control_surface import ControlSurface, ControlSurfaceSpecification
     from ableton.v3.control_surface import create_skin
-    from ableton.v3.control_surface.components import DEFAULT_DRUM_TRANSLATION_CHANNEL
+    from ableton.v3.control_surface.components import DEFAULT_DRUM_TRANSLATION_CHANNEL, TargetTrackComponent
     from ableton.v3.base import listens, const
 except ImportError:
     from .ableton.v3.control_surface import ControlSurface, ControlSurfaceSpecification
     from .ableton.v3.control_surface import create_skin
-    from .ableton.v3.control_surface.components import DEFAULT_DRUM_TRANSLATION_CHANNEL
+    from .ableton.v3.control_surface.components import DEFAULT_DRUM_TRANSLATION_CHANNEL, TargetTrackComponent
     from .ableton.v3.base import listens, const
 from .logger_config import get_logger
 from .colors import Rgb, Skin
@@ -30,6 +30,7 @@ class Specification(ControlSurfaceSpecification):
     goodbye_messages = (PAD_MODE_HEADER + (0, SYSEX_END),)
     create_mappings_function = create_mappings
     component_map = {
+        "Target_Track": TargetTrackComponent,
         "Drum_Step_Sequencer": DrumStepSequencerComponent,
         "Drum_Rack_Level": DrumRackLevelComponent,
     }
@@ -67,6 +68,9 @@ class APC_mini_mk2(ControlSurface):
 
             logger.debug("Setting up pad mode listener...")
             self._APC_mini_mk2__on_pad_mode_changed.subject = self.component_map["Pad_Modes"]
+
+            # Note: Component coordination now handled by framework's TargetTrackComponent lock system
+
             logger.info("✓ setup() complete")
         except Exception as e:
             logger.error(f"✗ setup() FAILED: {e}", exc_info=True)
