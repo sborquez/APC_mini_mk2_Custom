@@ -73,12 +73,19 @@ def create_mappings(control_surface):
                 component="Drum_Step_Sequencer",
                 drum_group_matrix="drum_pads",
                 step_sequence_matrix="sequence_pads",  # 8x4 step sequencer grid
-                mode_toggle_button="control_pads_raw[0]",  # Button 92 - Toggle selection/playable mode
-                resolution_button="control_pads_raw[2]",  # Button 94 - Cycle grid resolution
-                # prev_page_button="control_pads_raw[4]",  # Button 84 - Previous page (disabled for now)
-                # next_page_button="control_pads_raw[5]",  # Button 85 - Next page (disabled for now)
-                velocity_accent_button="control_pads_raw[6]",  # Button 86 - Accent velocity (127)
-                velocity_soft_button="control_pads_raw[7]",  # Button 87 - Soft velocity (60)
+                mode_toggle_button="control_pads_raw[0]",
+                play_button="control_pads_raw[2]",
+                # auto_launch_button="control_pads_raw[3]",
+
+                double_time_button="control_pads_raw[4]",
+                velocity_soft_button="control_pads_raw[5]",
+                velocity_accent_button="control_pads_raw[6]",
+
+                up_button="control_pads_raw[9]",
+                down_button="control_pads_raw[13]",
+
+                add_variant_button="control_pads_raw[11]",
+                clear_clip_button="control_pads_raw[15]",
             ),
             note_edit=None,
         )

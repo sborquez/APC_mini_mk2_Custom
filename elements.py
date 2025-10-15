@@ -52,6 +52,8 @@ class Elements(ElementsBase):
                 [
                     [92, 93, 94, 95],
                     [84, 85, 86, 87],
+                    [76, 77, 78, 79],
+                    [68, 69, 70, 71],
                 ],
                 "Control_Pads",
                 msg_type=MIDI_NOTE_TYPE,

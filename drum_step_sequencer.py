@@ -11,9 +11,10 @@ try:
         SequencerClip
     )
     from ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
-    from ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
-    from ableton.v3.live import liveobj_valid, get_bar_length
+    from ableton.v3.base import depends, listenable_property, EventObject, inject, const, listens
+    from ableton.v3.live import liveobj_valid, get_bar_length, playing_clip_slot, scene_index
     from Live.Clip import MidiNoteSpecification  # type: ignore
+    from Live.Song import Quantization  # type: ignore
 except ImportError:
     from .ableton.v3.control_surface import Component
     from .ableton.v3.control_surface.components import (
@@ -25,13 +26,12 @@ except ImportError:
         SequencerClip
     )
     from .ableton.v3.control_surface.controls import ButtonControl, ToggleButtonControl
-    from .ableton.v3.base import depends, listenable_property, EventObject, inject, const, task
-    from .ableton.v3.live import liveobj_valid, get_bar_length
-    try:
-        from Live.Clip import MidiNoteSpecification  # type: ignore
-    except ImportError:
-        # Fallback for when Live.Clip is not available
-        MidiNoteSpecification = None
+    from .ableton.v3.base import depends, listenable_property, EventObject, inject, const, listens
+    from .ableton.v3.live import liveobj_valid, get_bar_length, playing_clip_slot, scene_index
+
+    from Live.Clip import MidiNoteSpecification  # type: ignore
+    from Live.Song import Quantization  # type: ignore
+
 
 from .logger_config import get_logger
 
@@ -266,11 +266,12 @@ class CustomNoteEditorComponent(NoteEditorComponent):
     - Automatically contracts clip loop length when notes are deleted and empty bars remain at the end
     """
 
-    def __init__(self, custom_velocity_provider=None, *a, **k):
+    def __init__(self, custom_velocity_provider=None, parent_sequencer=None, *a, **k):
         # Don't pass full_velocity to parent - we'll handle it ourselves
         super().__init__(*a, **k)
         self._custom_velocity_provider = custom_velocity_provider
-        logger.debug("CustomNoteEditorComponent initialized with custom velocity provider")
+        self._parent_sequencer = parent_sequencer  # Reference to parent to access double_time_active
+        logger.debug("CustomNoteEditorComponent initialized with custom velocity provider and parent sequencer")
 
     def _add_new_note_in_step(self, pitch, time):
         """Override to use our custom velocity provider and handle loop extension"""
@@ -306,25 +307,80 @@ class CustomNoteEditorComponent(NoteEditorComponent):
                     self._clip.end_marker = new_loop_end
                 logger.debug(f"Extended clip loop from {current_loop_end} to {new_loop_end} to accommodate note at {time}")
 
-        note = MidiNoteSpecification(pitch=pitch,
-          start_time=time,
-          duration=(self.step_length),
-          velocity=velocity,
-          mute=False)
+        # Check if double time mode is active
+        double_time_active = False
+        if self._parent_sequencer and hasattr(self._parent_sequencer, '_double_time_active'):
+            double_time_active = self._parent_sequencer._double_time_active
 
-        # Add safety checks for clip methods
-        if hasattr(self._clip, 'add_new_notes'):
-            self._clip.add_new_notes((note,))  # type: ignore
+        if double_time_active:
+            # Add two notes with half the resolution (half the step length)
+            half_duration = self.step_length / 2.0
+
+            note1 = MidiNoteSpecification(
+                pitch=pitch,
+                start_time=time,
+                duration=half_duration,
+                velocity=velocity,
+                mute=False
+            )
+
+            note2 = MidiNoteSpecification(
+                pitch=pitch,
+                start_time=time + half_duration,
+                duration=half_duration,
+                velocity=velocity,
+                mute=False
+            )
+
+            # Add both notes
+            if hasattr(self._clip, 'add_new_notes'):
+                self._clip.add_new_notes((note1, note2))  # type: ignore
+            else:
+                return
         else:
-            logger.error("Clip does not have add_new_notes method")
-            return
+            # Normal mode: add single note with full step length
+            note = MidiNoteSpecification(
+                pitch=pitch,
+                start_time=time,
+                duration=(self.step_length),
+                velocity=velocity,
+                mute=False
+            )
+
+            # Add safety checks for clip methods
+            if hasattr(self._clip, 'add_new_notes'):
+                self._clip.add_new_notes((note,))  # type: ignore
+            else:
+                return
 
         if hasattr(self._clip, 'deselect_all_notes'):
             self._clip.deselect_all_notes()  # type: ignore
-        else:
-            logger.warning("Clip does not have deselect_all_notes method")
 
-        logger.debug(f"Added note with velocity: {velocity}")
+    def _get_alternate_color_for_step(self, index, visible_steps):
+        """Override to provide velocity-based and double time colors"""
+        # Check if this step has notes
+        if index in visible_steps:
+            notes = visible_steps[index].filter_notes(self._clip_notes)
+            if len(notes) > 0:
+                # Double time takes priority over velocity modifiers
+                if self._parent_sequencer and hasattr(self._parent_sequencer, '_double_time_active'):
+                    if self._parent_sequencer._double_time_active:
+                        logger.debug(f"Step {index}: Using double time color (blue)")
+                        return "NoteEditor.StepDoubleTime"
+
+                # Check velocity-based colors (only if double time is not active)
+                if self._custom_velocity_provider:
+                    velocity = self._custom_velocity_provider.velocity
+                    if velocity >= 127:  # Accent velocity
+                        logger.debug(f"Step {index}: Using accent color (amber), velocity: {velocity}")
+                        return "NoteEditor.StepAccent"
+                    elif velocity <= 60:  # Soft velocity
+                        logger.debug(f"Step {index}: Using soft color (yellow), velocity: {velocity}")
+                        return "NoteEditor.StepSoft"
+                    else:  # Normal velocity
+                        logger.debug(f"Step {index}: Using normal color (white), velocity: {velocity}")
+                        return "NoteEditor.StepNormal"
+        return None
 
     def _contract_loop_if_possible(self):
         """Remove empty bars from the end of the loop"""
@@ -384,26 +440,38 @@ class CustomNoteEditorComponent(NoteEditorComponent):
         return None
 
     def _get_color_for_step(self, index, visible_steps):
-        """Override to provide velocity-based colors"""
+        """Override to provide velocity-based and double time colors"""
         # Get the base color from parent
         base_color = super()._get_color_for_step(index, visible_steps)
 
-        # If there's a note in this step, check its velocity for color coding
+        # If there's a note in this step, check for double time and velocity-based colors
         if self._has_clip() and index in visible_steps:
             step = visible_steps[index]
             notes = step.filter_notes(self._clip_notes)
 
             if len(notes) > 0:
+                # Check if this step contains double time notes (two notes with half duration)
+                if len(notes) >= 2:
+                    # Check if the notes have half the expected duration (indicating double time)
+                    expected_duration = self.step_length
+                    half_duration = expected_duration / 2.0
+
+                    # Check if both notes have approximately half duration
+                    note1_duration = notes[0].duration
+                    note2_duration = notes[1].duration if len(notes) > 1 else 0
+
+                    if (abs(note1_duration - half_duration) < 0.01 and
+                        abs(note2_duration - half_duration) < 0.01):
+                        return "NoteEditor.StepDoubleTime"
+
+                # Use the actual note velocity for single notes or non-double-time notes
                 velocity = notes[0].velocity
-
-                # Determine color based on velocity
                 if velocity >= ACCENT_VELOCITY:
-                    return "DrumStepSequencer.StepAccent"  # Accent velocity (127)
+                    return "NoteEditor.StepAccent"
                 elif velocity <= SOFT_VELOCITY:
-                    return "DrumStepSequencer.StepSoft"    # Soft velocity (60)
+                    return "NoteEditor.StepSoft"
                 else:
-                    return "DrumStepSequencer.StepNormal"  # Normal velocity (100)
-
+                    return "NoteEditor.StepNormal"
         return base_color
 
     def _on_release_step(self, step, can_add_or_remove=False):
@@ -491,14 +559,42 @@ class DrumStepSequencerComponent(Component):
         on_color="DrumStepSequencer.ModeToggleOn"
     )
 
-    # Resolution cycle button
-    resolution_button = ButtonControl(
-        color="NoteEditor.Resolution"
+    # Start/stop button
+    play_button = ToggleButtonControl(
+        color="DrumStepSequencer.PlayOff",
+        on_color="DrumStepSequencer.PlayOn",
     )
 
-    # Reserved for future use - these buttons provide visual feedback but don't
-    # modify velocity (APC Mini MK2 has fixed hardware velocity of 127).
-    # Possible future uses: track selection, scene control, transport, etc.
+    # auto_launch_button = ToggleButtonControl(
+    #     color="DrumStepSequencer.AutoLaunchOff",
+    #     on_color="DrumStepSequencer.AutoLaunchOn",
+    # )
+
+    up_button = ButtonControl(
+        color="DrumStepSequencer.DirectionalOff",
+        on_color="DrumStepSequencer.DirectionalOn",
+    )
+
+    down_button = ButtonControl(
+        color="DrumStepSequencer.DirectionalOff",
+        on_color="DrumStepSequencer.DirectionalOff",
+    )
+
+    add_variant_button = ButtonControl(
+        color="DrumStepSequencer.AddVariantOff",
+        on_color="DrumStepSequencer.AddVariantOn",
+    )
+
+    clear_clip_button = ButtonControl(
+        color="DrumStepSequencer.ClearClipOff",
+        on_color="DrumStepSequencer.ClearClipOn",
+    )
+
+
+    double_time_button = ButtonControl(
+        color="DrumStepSequencer.DoubleTimeOff",
+    )
+
     velocity_accent_button = ButtonControl(
         color="DrumStepSequencer.VelocityAccentOff"
     )
@@ -528,10 +624,13 @@ class DrumStepSequencerComponent(Component):
             self._target_track = target_track
             logger.debug(f"Stored target_track: {target_track}")
 
+
             # Listen to target track changes
             if self._target_track:
                 self.register_slot(self._target_track, self._on_target_track_changed, "target_track")
-                logger.debug("Registered target track listener")
+                self.register_slot(self._target_track, self._on_target_clip_changed, "target_clip")
+                logger.debug("Registered target track and clip listeners")
+
 
             # Create custom velocity provider
             try:
@@ -541,6 +640,10 @@ class DrumStepSequencerComponent(Component):
             except Exception as e:
                 logger.error(f"CustomVelocityProvider FAILED: {e}", exc_info=True)
                 raise
+
+            # Create double time state
+            self._double_time_active = False
+            logger.debug("Double time state initialized to False")
 
             # Create pitch provider first (needed by drum group)
             try:
@@ -601,6 +704,7 @@ class DrumStepSequencerComponent(Component):
                 with inject(sequencer_clip=const(self._sequencer_clip)).everywhere():
                     self._note_editor = CustomNoteEditorComponent(
                         custom_velocity_provider=self._velocity_provider,
+                        parent_sequencer=self,  # Pass self as parent to access double_time_active
                         grid_resolution=self._grid_resolution,
                         parent=self
                     )
@@ -669,6 +773,109 @@ class DrumStepSequencerComponent(Component):
         self.set_selection_only_mode(not is_toggled)
         logger.info(f"Mode set to: {'Selection' if not is_toggled else 'Playable'}")
 
+    @play_button.toggled
+    def _on_play_button_toggled(self, is_toggled, button):
+        """Handle play button toggle - start/stop current clip"""
+        logger.info(f"Play button toggled to: {is_toggled}")
+
+        if not self._target_track or not self._target_track.target_track:
+            logger.warning("No target track available for play button")
+            return
+
+        current_track = self._target_track.target_track
+        current_clip = self._target_track.target_clip
+
+        if not current_clip:
+            logger.warning("No target clip available for play button")
+            return
+
+        try:
+            if is_toggled:
+                # Button pressed - start playing the clip with quantization
+                if not current_clip.is_playing:
+                    # Find the clip slot that contains this clip
+                    clip_slot = self._find_clip_slot_for_clip(current_track, current_clip)
+                    if clip_slot:
+                        # Use the clip's own launch quantization setting, or fall back to quarter note
+                        launch_quantization = getattr(clip_slot, 'launch_quantization', Quantization.q_quarter)
+                        if launch_quantization == Quantization.q_no_q:
+                            # If clip is set to no quantization, use quarter note for play button
+                            launch_quantization = Quantization.q_quarter
+
+                        # Fire the clip slot with quantization
+                        clip_slot.fire(launch_quantization=launch_quantization)
+                        logger.info(f"Started playing clip with quantization: {getattr(current_clip, 'name', 'Unnamed')}")
+                    else:
+                        # Fallback to immediate fire if clip slot not found
+                        current_clip.fire()
+                        logger.info(f"Started playing clip immediately: {getattr(current_clip, 'name', 'Unnamed')}")
+                else:
+                    logger.info("Clip is already playing")
+            else:
+                # Button released - stop playing the clip
+                if current_clip.is_playing:
+                    current_clip.stop()
+                    logger.info(f"Stopped playing clip: {getattr(current_clip, 'name', 'Unnamed')}")
+                else:
+                    logger.info("Clip is already stopped")
+        except Exception as e:
+            logger.error(f"Error controlling clip playback: {e}")
+            # Reset button state to match actual clip state
+            self._update_play_button_state()
+
+    # @auto_launch_button.toggled
+    # def _on_auto_launch_button_toggled(self, is_toggled, button):
+    #     """Handle auto launch button toggle"""
+    #     logger.info(f"Auto launch button toggled to: {is_toggled}")
+
+    @up_button.pressed
+    def _on_up_button_pressed(self, button):
+        """Handle up button press - navigate to previous clip slot"""
+        logger.info("Up button pressed - navigating to previous clip slot")
+        button.color = "DrumStepSequencer.DirectionalOn"
+        self._navigate_clip_slot(-1)
+
+    @up_button.released
+    def _on_up_button_released(self, button):
+        """Handle up button release"""
+        button.color = "DrumStepSequencer.DirectionalOff"
+
+    @down_button.pressed
+    def _on_down_button_pressed(self, button):
+        """Handle down button press - navigate to next clip slot"""
+        logger.info("Down button pressed - navigating to next clip slot")
+        button.color = "DrumStepSequencer.DirectionalOn"
+        self._navigate_clip_slot(1)
+
+    @down_button.released
+    def _on_down_button_released(self, button):
+        """Handle down button release"""
+        button.color = "DrumStepSequencer.DirectionalOff"
+
+    @add_variant_button.pressed
+    def _on_add_variant_button_pressed(self, button):
+        """Handle add variant button press - create variant of current clip"""
+        logger.info("Add variant button pressed - creating variant")
+        button.color = "DrumStepSequencer.AddVariantOn"
+        self._create_clip_variant()
+
+    @add_variant_button.released
+    def _on_add_variant_button_released(self, button):
+        """Handle add variant button release"""
+        button.color = "DrumStepSequencer.AddVariantOff"
+
+    @clear_clip_button.pressed
+    def _on_clear_clip_button_pressed(self, button):
+        """Handle clear clip button press - clear notes from current clip"""
+        button.color = "DrumStepSequencer.ClearClipOn"
+        self._clear_current_clip_notes()
+
+    @clear_clip_button.released
+    def _on_clear_clip_button_released(self, button):
+        """Handle clear clip button release"""
+        button.color = "DrumStepSequencer.ClearClipOff"
+
+
     def _on_target_track_changed(self):
         """Handle target track changes from framework's TargetTrackComponent"""
         if not self._target_track:
@@ -695,48 +902,70 @@ class DrumStepSequencerComponent(Component):
         if drum_rack_device:
             self.set_drum_group_device(drum_rack_device)
 
+    def _on_target_clip_changed(self):
+        """Handle target clip changes from framework's TargetTrackComponent"""
+        if not self._target_track:
+            return
 
-    @resolution_button.pressed
-    def _on_resolution_button_pressed(self, button):
-        """Cycle through grid resolutions"""
-        current_index = self._grid_resolution.index
-        next_index = (current_index + 1) % 8  # 8 resolutions available
-        self._grid_resolution.index = next_index
-        resolution_name = self._grid_resolution._resolutions[next_index].name
-        logger.info(f"Grid resolution changed to: {resolution_name}")
+        current_clip = self._target_track.target_clip
+        clip_name = getattr(current_clip, 'name', 'None') if current_clip else 'None'
+        logger.info(f"=== Target clip changed: {clip_name} ===")
+
+        # Update play button state to reflect new clip's playing status
+        self._update_play_button_state()
+
+        # Set up listener for clip playing status changes
+        self._setup_clip_playing_status_listener()
+
+    # Double time button handlers
+    @double_time_button.pressed
+    def _on_double_time_button_pressed(self, button):
+        """Handle double time button press - enables double time note creation"""
+        self._double_time_active = True
+        button.color = "DrumStepSequencer.DoubleTimeOn"
+        if hasattr(self, '_note_editor') and self._note_editor:
+            self._note_editor._update_editor_matrix()
+
+    @double_time_button.released
+    def _on_double_time_button_released(self, button):
+        """Handle double time button release - disables double time note creation"""
+        self._double_time_active = False
+        button.color = "DrumStepSequencer.DoubleTimeOff"
+        if hasattr(self, '_note_editor') and self._note_editor:
+            self._note_editor._update_editor_matrix()
 
     # Velocity button handlers
     @velocity_accent_button.pressed
     def _on_velocity_accent_button_pressed(self, button):
         """Handle accent button press"""
         self._velocity_provider.set_accent_pressed(True)
-        # Change button color to pulsing
         button.color = "DrumStepSequencer.VelocityAccentOn"
-        logger.info(f"Accent button pressed - velocity: {self._velocity_provider.velocity}")
+        if hasattr(self, '_note_editor') and self._note_editor:
+            self._note_editor._update_editor_matrix()
 
     @velocity_accent_button.released
     def _on_velocity_accent_button_released(self, button):
         """Handle accent button release"""
         self._velocity_provider.set_accent_pressed(False)
-        # Change button color back to dim
         button.color = "DrumStepSequencer.VelocityAccentOff"
-        logger.info(f"Accent button released - velocity: {self._velocity_provider.velocity}")
+        if hasattr(self, '_note_editor') and self._note_editor:
+            self._note_editor._update_editor_matrix()
 
     @velocity_soft_button.pressed
     def _on_velocity_soft_button_pressed(self, button):
         """Handle soft button press"""
         self._velocity_provider.set_soft_pressed(True)
-        # Change button color to pulsing
         button.color = "DrumStepSequencer.VelocitySoftOn"
-        logger.info(f"Soft button pressed - velocity: {self._velocity_provider.velocity}")
+        if hasattr(self, '_note_editor') and self._note_editor:
+            self._note_editor._update_editor_matrix()
 
     @velocity_soft_button.released
     def _on_velocity_soft_button_released(self, button):
         """Handle soft button release"""
         self._velocity_provider.set_soft_pressed(False)
-        # Change button color back to half-brightness
         button.color = "DrumStepSequencer.VelocitySoftOff"
-        logger.info(f"Soft button released - velocity: {self._velocity_provider.velocity}")
+        if hasattr(self, '_note_editor') and self._note_editor:
+            self._note_editor._update_editor_matrix()
 
     @property
     def drum_group(self):
@@ -758,18 +987,28 @@ class DrumStepSequencerComponent(Component):
         """Set the matrix for the drum step sequencer (required by Ableton framework)"""
         logger.debug("Setting drum group matrix via property setter")
         logger.debug(f"Matrix type: {type(matrix)}, Matrix: {matrix}")
-        self._drum_group.set_matrix(matrix)
-        logger.info("Drum group matrix set successfully via property")
+
+        # Only set matrix if we have a valid matrix (not None)
+        # This prevents the component from being disconnected when not in drum mode
+        if matrix is not None:
+            self._drum_group.set_matrix(matrix)
+            logger.info("Drum group matrix set successfully via property")
+        else:
+            logger.debug("Skipping None matrix via property setter - component not in drum mode")
 
     def set_drum_group_matrix(self, matrix):
         """Set the matrix for the drum step sequencer (legacy method)"""
-        logger.debug("Setting matrix for drum step sequencer via method")
+        logger.debug(f"Setting matrix for drum step sequencer via method - enabled: {self.is_enabled()}")
         logger.debug(f"Matrix type: {type(matrix)}, Matrix: {matrix}")
 
-        # Pass the matrix to the drum group component
-        self._drum_group.set_matrix(matrix)
-
-        logger.info("Matrix set for drum step sequencer")
+        # Only set matrix if we have a valid matrix (not None)
+        # This prevents the component from being disconnected when not in drum mode
+        if matrix is not None:
+            # Pass the matrix to the drum group component
+            self._drum_group.set_matrix(matrix)
+            logger.info("Matrix set for drum step sequencer")
+        else:
+            logger.debug("Skipping None matrix - component not in drum mode")
 
     def set_drum_group_device(self, drum_group_device):
         """Set the drum group device for the drum group component"""
@@ -780,10 +1019,14 @@ class DrumStepSequencerComponent(Component):
         logger.debug("Setting step sequence matrix")
         logger.debug(f"Matrix type: {type(matrix)}, Matrix: {matrix}")
 
-        # Connect matrix to note editor - this handles step programming and visual feedback
-        self._note_editor.set_matrix(matrix)
-
-        logger.info("Step sequence matrix set successfully")
+        # Only set matrix if we have a valid matrix (not None)
+        # This prevents the component from being disconnected when not in drum mode
+        if matrix is not None:
+            # Connect matrix to note editor - this handles step programming and visual feedback
+            self._note_editor.set_matrix(matrix)
+            logger.info("Step sequence matrix set successfully")
+        else:
+            logger.debug("Skipping None step sequence matrix - component not in drum mode")
 
     @property
     def step_sequence_matrix(self):
@@ -831,14 +1074,297 @@ class DrumStepSequencerComponent(Component):
 
     # Note: Component target management now handled by framework's TargetTrackComponent
 
+    def _update_play_button_state(self):
+        """Update play button state to reflect current clip's playing status"""
+        if not self._target_track or not self._target_track.target_clip:
+            # No clip available - button should be off
+            self.play_button.is_on = False
+            logger.debug("No target clip - play button set to OFF")
+            return
+
+        current_clip = self._target_track.target_clip
+        is_playing = getattr(current_clip, 'is_playing', False)
+
+        # Update button state to match clip playing status
+        self.play_button.is_on = is_playing
+        logger.debug(f"Play button state updated: {'ON' if is_playing else 'OFF'} (clip playing: {is_playing})")
+
+    def _setup_clip_playing_status_listener(self):
+        """Set up listener for clip playing status changes"""
+        # Clear any existing listener
+        self._DrumStepSequencerComponent__on_clip_playing_status_changed.subject = None
+
+        if not self._target_track or not self._target_track.target_clip:
+            logger.debug("No target clip available for playing status listener")
+            return
+
+        current_clip = self._target_track.target_clip
+        if liveobj_valid(current_clip):
+            # Set up listener for playing status changes
+            self._DrumStepSequencerComponent__on_clip_playing_status_changed.subject = current_clip
+            logger.debug(f"Set up playing status listener for clip: {getattr(current_clip, 'name', 'Unnamed')}")
+
+    @listens("playing_status")  # type: ignore
+    def _DrumStepSequencerComponent__on_clip_playing_status_changed(self):
+        """Handle clip playing status changes"""
+        logger.debug("Clip playing status changed")
+        self._update_play_button_state()
+
+    def _find_clip_slot_for_clip(self, track, clip):
+        """Find the clip slot that contains the given clip"""
+        if not track or not clip or not hasattr(track, 'clip_slots'):
+            return None
+
+        for clip_slot in track.clip_slots:
+            if hasattr(clip_slot, 'clip') and clip_slot.clip == clip:
+                return clip_slot
+
+        return None
+
+    def _navigate_clip_slot(self, direction):
+        """Navigate to the next/previous clip slot"""
+        # Check if sequencer is locked to a track
+        if self._target_track and hasattr(self._target_track, 'is_locked_to_track') and self._target_track.is_locked_to_track:
+            # If locked, use the locked track for clip creation
+            current_track = self._target_track.target_track
+            current_clip = self._target_track.target_clip
+            logger.info(f"Sequencer is locked to track {current_track.name if current_track else 'None'}")
+        else:
+            # If not locked, use the currently selected track in Ableton Live
+            if not hasattr(self.song.view, 'selected_track') or not self.song.view.selected_track:
+                logger.warning("No track selected in Ableton Live for navigation")
+                return
+
+            current_track = self.song.view.selected_track
+            current_clip = None
+
+            # Get the currently highlighted clip if any
+            if hasattr(self.song.view, 'highlighted_clip_slot') and self.song.view.highlighted_clip_slot:
+                if hasattr(self.song.view.highlighted_clip_slot, 'clip'):
+                    current_clip = self.song.view.highlighted_clip_slot.clip
+            logger.info(f"Using currently selected track {current_track.name}")
+
+        if not hasattr(current_track, 'clip_slots'):
+            logger.warning("Target track has no clip slots")
+            return
+
+        # Find current clip slot index
+        current_slot_index = None
+        if current_clip:
+            for i, clip_slot in enumerate(current_track.clip_slots):
+                if hasattr(clip_slot, 'clip') and clip_slot.clip == current_clip:
+                    current_slot_index = i
+                    break
+
+        # If no current clip, start from scene index
+        if current_slot_index is None:
+            current_slot_index = scene_index()
+
+        # Calculate new slot index
+        new_slot_index = current_slot_index + direction
+
+        # Check bounds
+        if new_slot_index < 0 or new_slot_index >= len(current_track.clip_slots):
+            logger.info(f"Navigation would go out of bounds (index {new_slot_index})")
+            return
+
+        new_clip_slot = current_track.clip_slots[new_slot_index]
+
+        # If the new slot is empty, create an empty clip
+        if not hasattr(new_clip_slot, 'has_clip') or not new_clip_slot.has_clip:
+            logger.info(f"Creating empty clip in slot {new_slot_index}")
+            clip_created = self._create_empty_clip_in_slot(new_clip_slot)
+            if not clip_created:
+                logger.warning(f"Failed to create clip in slot {new_slot_index}")
+                return
+
+        # Always update Ableton Live's session view to show the navigation
+        if hasattr(self.song.view, 'selected_track') and self.song.view.selected_track:
+            # Find the corresponding clip slot in the currently viewed track
+            viewed_track = self.song.view.selected_track
+            if hasattr(viewed_track, 'clip_slots') and new_slot_index < len(viewed_track.clip_slots):
+                viewed_clip_slot = viewed_track.clip_slots[new_slot_index]
+                # Highlight the corresponding row in the currently viewed track
+                if hasattr(self.song.view, 'highlighted_clip_slot'):
+                    self.song.view.highlighted_clip_slot = viewed_clip_slot
+                logger.info(f"Highlighted row {new_slot_index} in viewed track {viewed_track.name}")
+
+        # Update the sequencer's target clip if locked
+        if self._target_track and hasattr(self._target_track, 'is_locked_to_track') and self._target_track.is_locked_to_track:
+            # If locked, update the sequencer's target clip
+            if hasattr(new_clip_slot, 'clip') and new_clip_slot.clip:
+                self._target_track._target_clip = new_clip_slot.clip
+                self._target_track.notify_target_clip()
+                self._on_target_clip_changed()
+                logger.info(f"Updated sequencer target clip to slot {new_slot_index} of locked track {current_track.name}")
+            else:
+                self._target_track._target_clip = None
+                self._target_track.notify_target_clip()
+                self._on_target_clip_changed()
+                logger.info(f"Updated sequencer target clip to None for slot {new_slot_index} of locked track {current_track.name}")
+
+    def _create_empty_clip_in_slot(self, clip_slot):
+        """Create an empty clip in the given clip slot"""
+        try:
+            if not hasattr(clip_slot, 'create_clip'):
+                logger.warning("Clip slot does not support creating clips")
+                return False
+
+            # Create a 1-bar empty clip
+            clip_length = get_bar_length()
+            clip_slot.create_clip(clip_length)
+            logger.info(f"Created empty clip with length {clip_length}")
+            return True
+        except Exception as e:
+            logger.error(f"Error creating empty clip: {e}")
+            return False
+
+    def _create_clip_variant(self):
+        """Create a variant (duplicate) of the current clip"""
+        # Check if sequencer is locked to a track
+        if self._target_track and hasattr(self._target_track, 'is_locked_to_track') and self._target_track.is_locked_to_track:
+            # If locked, use the locked track for variant creation
+            current_track = self._target_track.target_track
+            current_clip = self._target_track.target_clip
+            logger.info(f"Sequencer is locked to track {current_track.name if current_track else 'None'} for variant creation")
+        else:
+            # If not locked, use the currently selected track in Ableton Live
+            if not hasattr(self.song.view, 'selected_track') or not self.song.view.selected_track:
+                logger.warning("No track selected in Ableton Live for variant creation")
+                return
+
+            current_track = self.song.view.selected_track
+            current_clip = None
+
+            # Get the currently highlighted clip if any
+            if hasattr(self.song.view, 'highlighted_clip_slot') and self.song.view.highlighted_clip_slot:
+                if hasattr(self.song.view.highlighted_clip_slot, 'clip'):
+                    current_clip = self.song.view.highlighted_clip_slot.clip
+            logger.info(f"Using currently selected track {current_track.name} for variant creation")
+
+        if not current_clip:
+            logger.warning("No current clip to create variant from")
+            return
+
+        # Find current clip slot index
+        current_slot_index = None
+        for i, clip_slot in enumerate(current_track.clip_slots):
+            if hasattr(clip_slot, 'clip') and clip_slot.clip == current_clip:
+                current_slot_index = i
+                break
+
+        if current_slot_index is None:
+            logger.warning("Could not find current clip slot")
+            return
+
+        # Find the next empty slot
+        next_empty_slot = None
+        next_empty_index = None
+
+        # Look for empty slot after current position
+        for i in range(current_slot_index + 1, len(current_track.clip_slots)):
+            clip_slot = current_track.clip_slots[i]
+            if not hasattr(clip_slot, 'has_clip') or not clip_slot.has_clip:
+                next_empty_slot = clip_slot
+                next_empty_index = i
+                break
+
+        if next_empty_slot is None:
+            logger.warning("No empty slot found for variant creation")
+            return
+
+        try:
+            # Use the proper Ableton Live API to duplicate the clip
+            if hasattr(current_track, 'duplicate_clip_slot'):
+                # Find the source clip slot index
+                source_slot_index = None
+                for i, clip_slot in enumerate(current_track.clip_slots):
+                    if hasattr(clip_slot, 'clip') and clip_slot.clip == current_clip:
+                        source_slot_index = i
+                        break
+
+                if source_slot_index is not None:
+                    # Use the track's duplicate_clip_slot method
+                    new_slot_index = current_track.duplicate_clip_slot(source_slot_index)
+                    logger.info(f"Duplicated clip from slot {source_slot_index} to slot {new_slot_index}")
+
+                    # Get the new clip slot
+                    if new_slot_index < len(current_track.clip_slots):
+                        next_empty_slot = current_track.clip_slots[new_slot_index]
+                        next_empty_index = new_slot_index
+                    else:
+                        logger.warning(f"Duplicate returned invalid slot index: {new_slot_index}")
+                        return
+                else:
+                    logger.warning("Could not find source clip slot for duplication")
+                    return
+            else:
+                logger.warning("Track does not support clip duplication")
+                return
+
+            # Navigate to the new variant
+            # Always update Ableton Live's session view to show the navigation
+            if hasattr(self.song.view, 'selected_track') and self.song.view.selected_track:
+                # Find the corresponding clip slot in the currently viewed track
+                viewed_track = self.song.view.selected_track
+                if hasattr(viewed_track, 'clip_slots') and next_empty_index < len(viewed_track.clip_slots):
+                    viewed_clip_slot = viewed_track.clip_slots[next_empty_index]
+                    # Highlight the corresponding row in the currently viewed track
+                    if hasattr(self.song.view, 'highlighted_clip_slot'):
+                        self.song.view.highlighted_clip_slot = viewed_clip_slot
+                    logger.info(f"Highlighted variant row {next_empty_index} in viewed track {viewed_track.name}")
+
+            # Update the sequencer's target clip if locked
+            if self._target_track and hasattr(self._target_track, 'is_locked_to_track') and self._target_track.is_locked_to_track:
+                # If locked, update the sequencer's target clip
+                self._target_track._target_clip = next_empty_slot.clip
+                self._target_track.notify_target_clip()
+                self._on_target_clip_changed()
+                logger.info(f"Updated sequencer target clip to variant in slot {next_empty_index} of locked track {current_track.name}")
+        except Exception as e:
+            logger.error(f"Error creating clip variant: {e}")
+
+    def _clear_current_clip_notes(self):
+        """Clear all notes from the current clip"""
+        # Check if sequencer is locked to a track
+        if self._target_track and hasattr(self._target_track, 'is_locked_to_track') and self._target_track.is_locked_to_track:
+            current_track = self._target_track.target_track
+            current_clip = self._target_track.target_clip
+        else:
+            if not hasattr(self.song.view, 'selected_track') or not self.song.view.selected_track:
+                return
+
+            current_track = self.song.view.selected_track
+            current_clip = None
+
+            if hasattr(self.song.view, 'highlighted_clip_slot') and self.song.view.highlighted_clip_slot:
+                if hasattr(self.song.view.highlighted_clip_slot, 'clip'):
+                    current_clip = self.song.view.highlighted_clip_slot.clip
+
+        if not current_clip:
+            return
+
+        try:
+            if hasattr(current_clip, 'is_midi_clip') and current_clip.is_midi_clip:
+                current_clip.remove_notes_extended(
+                    from_time=0,
+                    from_pitch=0,
+                    time_span=16.0,    # 4 bars
+                    pitch_span=128     # All MIDI pitches
+                )
+        except Exception as e:
+            logger.error(f"Error clearing clip notes: {e}")
+
     def update(self):
         """Update the component"""
         super().update()
-        logger.debug("Updating drum step sequencer component")
 
         # Update composed components
         self._drum_group.update()
         self._note_editor.update()
         if self._loop_selector:
             self._loop_selector.update()
+
+        # Update play button state on component update
+        self._update_play_button_state()
 

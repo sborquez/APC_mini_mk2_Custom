@@ -35,7 +35,9 @@ class Basic:
 
 class Rgb:
     BLACK = make_simple_color(0)
-    GREY = make_simple_color(1)
+    # GREY = make_simple_color(1)
+    GREY = make_simple_color(70)
+    RED_OFF = make_simple_color(58)
     RED = make_simple_color(5)
     RED_BLINK = SimpleColor(5, channel=BLINK_CHANNEL)
     RED_PULSE = SimpleColor(5, channel=PULSE_CHANNEL)
@@ -53,9 +55,12 @@ class Rgb:
     GREEN_HALF = SimpleColor(21, channel=HALF_BRIGHTNESS_CHANNEL)
     PURPLE = make_simple_color(81)
     OCEAN = make_simple_color(41)
+    BLUE_OFF = make_simple_color(43)
     BLUE = make_simple_color(45)
     WHITE = make_simple_color(3)
     WHITE_HALF = SimpleColor(127, channel=HALF_BRIGHTNESS_CHANNEL)
+    CYAN_OFF = make_simple_color(36)
+    CYAN = make_simple_color(33)
 
 class Skin:
 
@@ -71,7 +76,7 @@ class Skin:
         StopClip = Basic.ON
 
     class TargetTrack:
-        LockOff = Rgb.YELLOWISH  # Yellowish for unlocked state
+        LockOff = Rgb.BLUE_OFF  # Yellowish for unlocked state
         LockOn = Rgb.BLUE        # Blue for locked state
 
     class DrumGroup:
@@ -84,48 +89,36 @@ class Skin:
         PadSoloedSelected = Rgb.OCEAN
 
     class DrumStepSequencer:
-        # Step sequencer
-        StepEmpty = Rgb.BLACK
-        StepActiveSoft = Rgb.WHITE_HALF
-        StepActiveNormal = Rgb.WHITE
-        StepActiveAccent = Rgb.AMBER
-        CurrentStep = Rgb.GREEN_BLINK
-        StepFilled = Rgb.PURPLE
-        StepMuted = Rgb.GREY
-        NoClip = Rgb.GREY
-        StepDisabled = Rgb.BLACK
-        PageEmpty = Rgb.BLACK
-        PageFilled = Rgb.BLUE
-        CurrentPage = Rgb.BLUE
-
-        # Velocity-based step colors
-        StepNormal = Rgb.WHITE        # Normal velocity (100)
-        StepSoft = Rgb.YELLOW     # Soft velocity (60) - half brightness
-        StepAccent = Rgb.AMBER        # Accent velocity (127) - amber color
-
-        # Mode toggle button colors - following proper naming convention
-        ModeToggleOff = Rgb.GREENISH  # Greenish for selection mode (off state)
-        ModeToggleOn = Rgb.GREEN      # Green for playable mode (on state)
-
-        # Lock button colors
-        LockOff = Rgb.YELLOWISH  # Yellowish for unlocked state
-        LockOn = Rgb.BLUE        # Blue for locked state
-
-        # Velocity button states (off/on)
-        # NOTE: APC Mini MK2 may not support pulse/half-brightness via MIDI channels
-        # Using same colors for now - just testing if colors show at all
+        # Button colors
+        ModeToggleOff = Rgb.GREENISH
+        ModeToggleOn = Rgb.GREEN
+        PlayOff = Rgb.RED_OFF
+        PlayOn = Rgb.GREEN
+        AutoLaunchOff = Rgb.RED_OFF
+        AutoLaunchOn = Rgb.RED
+        DirectionalOff = Rgb.GREY
+        DirectionalOn = Rgb.WHITE
+        AddVariantOff = Rgb.CYAN_OFF
+        AddVariantOn = Rgb.CYAN
+        ClearClipOff = Rgb.RED_OFF
+        ClearClipOn = Rgb.RED
+        DoubleTimeOff = Rgb.OCEAN
+        DoubleTimeOn = Rgb.BLUE
         VelocityAccentOff = Rgb.AMBERISH
         VelocityAccentOn = Rgb.AMBER
         VelocitySoftOff = Rgb.YELLOWISH
         VelocitySoftOn = Rgb.YELLOW
 
     class NoteEditor:
-        # Step colors
         StepEmpty = Rgb.BLACK
         StepFilled = Rgb.WHITE
         StepActivated = Rgb.GREEN
         StepMuted = Rgb.GREY
         StepDisabled = Rgb.BLACK
+        StepDoubleTime = Rgb.BLUE
+        StepAccent = Rgb.AMBER
+        StepSoft = Rgb.YELLOW
+        StepNormal = Rgb.WHITE
 
         # Playhead - current playing step
         Playhead = Rgb.GREEN_BLINK
